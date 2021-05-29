@@ -1,0 +1,15 @@
+[package]
+name = "customs"
+version = "0.1.0"
+authors = ["Paavo Huhtala <paavo.huhtala@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+anyhow = "1.0.40"
+clap = "3.0.0-beta.2"
+rayon = "1.5.1"
+relative-path = "1.4.0"
+swc_common = "0.10.20"
+swc_ecma_ast = "0.45.0"
+swc_ecma_parser = "0.57.2"
+walkdir = "2.3.2"
