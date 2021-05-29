@@ -150,7 +150,12 @@ pub fn normalize_module_path(
         .file_name()
         .expect("The path must point to a file")
         .to_string_lossy();
-    let file_name_without_extension = file_name.split_terminator('.').next().unwrap();
+
+    // This is not exactly nice and/or clean, but it is the cleanest I could come up with for handling files like foo.stories.tsx.
+    let file_name_without_extension = file_name
+        .trim_end_matches(".d.ts")
+        .trim_end_matches(".ts")
+        .trim_end_matches(".tsx");
 
     let normalized_path = folder.join(file_name_without_extension);
 
