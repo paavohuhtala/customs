@@ -36,17 +36,11 @@ fn main() -> anyhow::Result<()> {
         parse_duration.as_millis()
     );
 
-    let mut total_imports = 0;
-
-    analyze_imports(&modules, &mut total_imports);
+    analyze_imports(&modules);
 
     let resolution_duration = finished_parse_time.elapsed();
 
-    println!(
-        "Resolved {} imports in {} ms",
-        total_imports,
-        resolution_duration.as_millis()
-    );
+    println!("Resolved imports in {} ms", resolution_duration.as_millis());
 
     report_unused_dependencies(modules, opts.format)?;
 

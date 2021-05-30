@@ -2,10 +2,7 @@ use std::borrow::Cow;
 
 use crate::dependency_graph::{ExportName, Import, Module, NormalizedModulePath, Usage};
 
-pub fn analyze_imports(
-    modules: &std::collections::HashMap<NormalizedModulePath, Module>,
-    total_imports: &mut i32,
-) {
+pub fn analyze_imports(modules: &std::collections::HashMap<NormalizedModulePath, Module>) {
     for (path, module) in modules.iter() {
         for (import_path, imports) in &module.imported_modules {
             match modules.get(import_path) {
@@ -23,7 +20,6 @@ pub fn analyze_imports(
                     }
 
                     for import in imports {
-                        *total_imports += 1;
                         let key = match import {
                             Import::Named(name) => ExportName::Named(Cow::Borrowed(name)),
                             Import::Default => ExportName::Default,
@@ -36,7 +32,7 @@ pub fn analyze_imports(
                         match source_module.exports.get(&key) {
                             None => {
                                 println!(
-                                    "Failed to resolve export {:?} in module {} (imported from {})",
+                                    "Failed to resolve export {} in module {} (imported from {})",
                                     key,
                                     import_path.to_string_lossy(),
                                     path.to_string_lossy(),

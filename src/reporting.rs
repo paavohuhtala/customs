@@ -85,7 +85,7 @@ fn report_compact(modules: HashMap<NormalizedModulePath, Module>) -> anyhow::Res
         .sorted_by(|(_, a_location), (_, b_location)| a_location.path().cmp(b_location.path()))
         .collect::<Vec<(ExportName, ModuleSourceAndLine)>>();
 
-    if sorted_exports.len() == 0 {
+    if sorted_exports.is_empty() {
         println!("No unused exports!");
         return Ok(());
     }

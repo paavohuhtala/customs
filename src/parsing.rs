@@ -156,7 +156,7 @@ fn parse_import_decl(
 
     // If this doesn't start with . it's a global module -> bail
     // TODO: is there a better way to detect this?
-    if !import_decl.src.value.starts_with(".") {
+    if !import_decl.src.value.starts_with('.') {
         return Ok(());
     }
 
@@ -168,7 +168,7 @@ fn parse_import_decl(
     let module_imports = module
         .imported_modules
         .entry(normalized_import_source)
-        .or_insert_with(|| Vec::new());
+        .or_insert_with(Vec::new);
 
     for specifier in &import_decl.specifiers {
         match specifier {
@@ -239,7 +239,7 @@ fn parse_module(
         .parse_module()
         .map_err(|err| anyhow!("Failed to parse module: {:?}", err))?;
 
-    let mut module = Module::new(file_path.clone(), normalized_path, module_kind);
+    let mut module = Module::new(file_path, normalized_path, module_kind);
 
     let mut default_export: Option<(ExportKind, ModuleSourceAndLine)> = None;
 

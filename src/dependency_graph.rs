@@ -55,7 +55,7 @@ pub struct ModuleSourceAndLine {
 impl ModuleSourceAndLine {
     pub fn new(path: Arc<PathBuf>, zero_based_line: usize) -> ModuleSourceAndLine {
         ModuleSourceAndLine {
-            path: path.clone(),
+            path,
             zero_based_line,
         }
     }
