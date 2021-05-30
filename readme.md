@@ -12,14 +12,17 @@ customs 0.1
 Paavo Huhtala <paavo.huhtala@gmail.com>
 
 USAGE:
-    customs.exe <target-dir>
-
-ARGS:
-    <target-dir>
+    customs.exe [OPTIONS] <target-dir>
 
 FLAGS:
     -h, --help       Prints help information
     -V, --version    Prints version information
+
+OPTIONS:
+    -f, --format <format>     [default: compact]  [possible values: clean, compact]
+
+ARGS:
+    <target-dir>
 ```
 
 
@@ -41,7 +44,7 @@ These benchmarks were conducted on a desktop workstation with an 8-core (16 thre
 
 Why is `customs` so much faster? 
 
-- It doesn't implement _exactly_ the same feature set as `ts-prune`. While this is important for keeping the benchmark fair, I believe reaching feature parity with `ts-prune` would not have a considerabale effect on performance. I'll cover this in slightly more detail in the next section.
+- It doesn't implement _exactly_ the same feature set as `ts-prune`. While this is important to disclose to keep the benchmark fair, I believe reaching feature parity with `ts-prune` would not have a considerabale effect on performance. I'll cover this in slightly more detail in the next section.
 - It uses swc which has a really fast EcmaScript / TypeScript parser.
 - It is written in Rust, and therefore benefits from native code and no garbage collection.
 - Since Rust has no runtime the program starts very quickly, which has a large impact with smaller codebases.
@@ -66,7 +69,6 @@ There are also some neat features from `ts-prune` which I haven't implemented in
 
 - Add some tests
 - Setup a CI pipeline
-- Refactor into something more manageable than a single unorganized file
 - Report locally used exports separately vs completely dead code
 - Show real file names in the output, not just normalized module paths
 - Include line numbers in the output

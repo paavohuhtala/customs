@@ -1,26 +1,27 @@
 use std::{convert::TryFrom, path::PathBuf, time::Instant};
 
-use clap::{AppSettings, Clap};
-
 mod dependency_graph;
 
 mod analysis;
 mod parsing;
 mod reporting;
 
+use structopt::StructOpt;
+
 use crate::analysis::analyze_imports;
 use crate::parsing::parse_all_modules;
-use crate::reporting::report_unused_dependencies;
+use crate::reporting::{report_unused_dependencies, OutputFormat};
 
-#[derive(Clap)]
-#[clap(version = "0.1", author = "Paavo Huhtala <paavo.huhtala@gmail.com>")]
-#[clap(setting = AppSettings::ColoredHelp)]
+#[derive(StructOpt)]
+#[structopt(version = "0.1", author = "Paavo Huhtala <paavo.huhtala@gmail.com>")]
 struct Opts {
     target_dir: String,
+    #[structopt(short, long, default_value = "compact", possible_values = OutputFormat::ALL_FORMATS)]
+    format: OutputFormat,
 }
 
 fn main() -> anyhow::Result<()> {
-    let opts = Opts::parse();
+    let opts = Opts::from_args();
     let root = PathBuf::try_from(opts.target_dir)?;
 
     let start_time = Instant::now();
@@ -47,7 +48,7 @@ fn main() -> anyhow::Result<()> {
         resolution_duration.as_millis()
     );
 
-    report_unused_dependencies(modules);
+    report_unused_dependencies(modules, opts.format);
 
     println!("Finished in {}ms", start_time.elapsed().as_millis());
 
