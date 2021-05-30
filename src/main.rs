@@ -1,3 +1,4 @@
+use std::sync::{Arc, RwLock};
 use std::{convert::TryFrom, path::PathBuf, time::Instant};
 
 mod dependency_graph;
@@ -6,6 +7,7 @@ mod analysis;
 mod parsing;
 mod reporting;
 
+use string_interner::StringInterner;
 use structopt::StructOpt;
 
 use crate::analysis::analyze_imports;
@@ -26,7 +28,9 @@ fn main() -> anyhow::Result<()> {
 
     let start_time = Instant::now();
 
-    let modules = parse_all_modules(&root);
+    let interner = Arc::new(RwLock::new(StringInterner::new()));
+
+    let modules = parse_all_modules(&root, interner.clone());
 
     let finished_parse_time = Instant::now();
     let parse_duration = finished_parse_time - start_time;
@@ -38,7 +42,10 @@ fn main() -> anyhow::Result<()> {
 
     let mut total_imports = 0;
 
-    analyze_imports(&modules, &mut total_imports);
+    {
+        let interner = interner.read().unwrap();
+        analyze_imports(&modules, &mut total_imports, &interner);
+    }
 
     let resolution_duration = finished_parse_time.elapsed();
 
@@ -48,7 +55,10 @@ fn main() -> anyhow::Result<()> {
         resolution_duration.as_millis()
     );
 
-    report_unused_dependencies(modules, opts.format)?;
+    {
+        let interner = interner.read().unwrap();
+        report_unused_dependencies(modules, opts.format, &interner)?;
+    }
 
     println!("Finished in {}ms", start_time.elapsed().as_millis());
 

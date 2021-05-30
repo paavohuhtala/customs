@@ -1,7 +1,14 @@
-use std::{borrow::Cow, collections::HashMap, ops::Deref, path::Path, sync::Arc};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    ops::Deref,
+    path::Path,
+    sync::{Arc, RwLock},
+};
 
 use anyhow::anyhow;
 use rayon::prelude::*;
+use string_interner::StringInterner;
 use swc_common::{FilePathMapping, SourceMap, Span};
 use swc_ecma_ast::{Decl, DefaultDecl, Ident, ModuleDecl, ModuleItem, ObjectPatProp, Pat, Stmt};
 
@@ -151,6 +158,7 @@ fn parse_import_decl(
     current_folder: &Path,
     import_decl: swc_ecma_ast::ImportDecl,
     module: &mut Module,
+    interner: &mut StringInterner,
 ) -> anyhow::Result<()> {
     use swc_ecma_ast::ImportSpecifier;
 
@@ -162,8 +170,12 @@ fn parse_import_decl(
 
     // TODO: handle CSS & other non-code imports
 
-    let normalized_import_source =
-        resolve_import_path(&root, current_folder, import_decl.src.value.deref())?;
+    let normalized_import_source = resolve_import_path(
+        &root,
+        current_folder,
+        import_decl.src.value.deref(),
+        interner,
+    )?;
 
     let module_imports = module
         .imported_modules
@@ -200,6 +212,7 @@ fn parse_module(
     root: &Path,
     file_path: &Path,
     module_kind: ModuleKind,
+    interner: Arc<RwLock<StringInterner>>,
 ) -> anyhow::Result<Module<'static>> {
     use swc_ecma_parser::{lexer::Lexer, Parser, StringInput, Syntax, TsConfig};
 
@@ -212,7 +225,11 @@ fn parse_module(
         tsx: module_kind == ModuleKind::TSX,
     };
 
-    let normalized_path = normalize_module_path(&root, &file_path)?;
+    let normalized_path = {
+        let mut locked_interner = interner.write().unwrap();
+        normalize_module_path(&root, &file_path, &mut locked_interner)?
+    };
+
     let current_folder = file_path
         .parent()
         .expect("A file path should always have a parent");
@@ -294,7 +311,14 @@ fn parse_module(
                 default_export = Some((export_kind, location));
             }
             ModuleItem::ModuleDecl(ModuleDecl::Import(import_decl)) => {
-                parse_import_decl(root, current_folder, import_decl, &mut module)?;
+                let mut locked_interner = interner.write().unwrap();
+                parse_import_decl(
+                    root,
+                    current_folder,
+                    import_decl,
+                    &mut module,
+                    &mut locked_interner,
+                )?;
             }
 
             _ => {}
@@ -311,7 +335,10 @@ fn parse_module(
     Ok(module)
 }
 
-pub fn parse_all_modules(root: &Path) -> HashMap<NormalizedModulePath, Module> {
+pub fn parse_all_modules<'a>(
+    root: &Path,
+    interner: Arc<RwLock<StringInterner>>,
+) -> HashMap<NormalizedModulePath, Module<'a>> {
     ignore::Walk::new(&root)
         .into_iter()
         .par_bridge()
@@ -343,7 +370,9 @@ pub fn parse_all_modules(root: &Path) -> HashMap<NormalizedModulePath, Module> {
                 return None;
             };
 
-            match parse_module(&root, &file_path, module_kind) {
+            let interner = interner.clone();
+
+            match parse_module(&root, &file_path, module_kind, interner) {
                 Ok(module) => Some((module.normalized_path.clone(), module)),
                 Err(err) => {
                     eprintln!("Error while parsing {}: {}", file_path.display(), err);

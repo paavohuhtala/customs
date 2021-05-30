@@ -1,10 +1,13 @@
 use std::borrow::Cow;
 
+use string_interner::StringInterner;
+
 use crate::dependency_graph::{ExportName, Import, Module, NormalizedModulePath, Usage};
 
 pub fn analyze_imports(
     modules: &std::collections::HashMap<NormalizedModulePath, Module>,
     total_imports: &mut i32,
+    string_interner: &StringInterner,
 ) {
     for (path, module) in modules.iter() {
         for (import_path, imports) in &module.imported_modules {
@@ -12,8 +15,8 @@ pub fn analyze_imports(
                 None => {
                     println!(
                         "WARNING: Failed to resolve module {} (in {})",
-                        import_path.to_string_lossy(),
-                        path.to_string_lossy()
+                        import_path.resolve(&string_interner),
+                        path.resolve(&string_interner)
                     );
                 }
                 Some(source_module) => {
@@ -38,8 +41,8 @@ pub fn analyze_imports(
                                 println!(
                                     "Failed to resolve export {:?} in module {} (imported from {})",
                                     key,
-                                    import_path.to_string_lossy(),
-                                    path.to_string_lossy(),
+                                    import_path.resolve(&string_interner),
+                                    path.resolve(&string_interner)
                                 );
                             }
                             Some(export) => {

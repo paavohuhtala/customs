@@ -5,6 +5,7 @@ use std::str::FromStr;
 
 use anyhow::anyhow;
 use itertools::Itertools;
+use string_interner::StringInterner;
 
 use crate::dependency_graph::ExportName;
 use crate::dependency_graph::ModuleSourceAndLine;
@@ -32,10 +33,14 @@ impl OutputFormat {
     pub const ALL_FORMATS: &'static [&'static str] = &["clean", "compact"];
 }
 
-fn report_clean(modules: HashMap<NormalizedModulePath, Module>) -> anyhow::Result<()> {
+fn report_clean(
+    modules: HashMap<NormalizedModulePath, Module>,
+    interner: &StringInterner,
+) -> anyhow::Result<()> {
     let mut sorted_modules = modules
         .into_iter()
         .filter(|(_, module)| !module.is_wildcard_imported())
+        .map(|(path, module)| (path.resolve(interner), module))
         .collect::<Vec<_>>();
 
     sorted_modules.sort_by(|(a, _), (b, _)| a.cmp(&b));
@@ -55,7 +60,7 @@ fn report_clean(modules: HashMap<NormalizedModulePath, Module>) -> anyhow::Resul
             .enumerate()
         {
             if i == 0 {
-                println!("  {}:", path.display());
+                println!("  {}:", path);
             }
 
             let name = item.get_name();
@@ -104,9 +109,10 @@ fn report_compact(modules: HashMap<NormalizedModulePath, Module>) -> anyhow::Res
 pub fn report_unused_dependencies(
     modules: HashMap<NormalizedModulePath, Module>,
     format: OutputFormat,
+    interner: &StringInterner,
 ) -> anyhow::Result<()> {
     match format {
-        OutputFormat::Clean => report_clean(modules),
+        OutputFormat::Clean => report_clean(modules, interner),
         OutputFormat::Compact => report_compact(modules),
     }
 }

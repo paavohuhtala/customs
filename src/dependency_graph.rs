@@ -3,24 +3,32 @@ use std::{
     cell::Cell,
     collections::HashMap,
     fmt::Display,
-    ops::Deref,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use anyhow::Context;
 use relative_path::RelativePath;
+use string_interner::{symbol::SymbolU32, StringInterner};
 
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
-pub struct NormalizedModulePath(PathBuf);
+pub struct NormalizedModulePath(SymbolU32);
 
-impl Deref for NormalizedModulePath {
+impl NormalizedModulePath {
+    pub fn resolve<'a>(&self, interner: &'a StringInterner) -> &'a str {
+        interner
+            .resolve(self.0)
+            .expect("Should always exist in cache")
+    }
+}
+
+/*impl Deref for NormalizedModulePath {
     type Target = PathBuf;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
-}
+}*/
 
 #[derive(PartialEq, Eq, Hash, Debug, Clone, PartialOrd, Ord)]
 pub enum ExportName<'a> {
@@ -180,6 +188,7 @@ pub enum Visibility {
 pub fn normalize_module_path(
     project_root: &Path,
     module_path: &Path,
+    interner: &mut StringInterner,
 ) -> anyhow::Result<NormalizedModulePath> {
     let normalized_path = module_path.strip_prefix(project_root).with_context(|| {
         format!(
@@ -203,25 +212,28 @@ pub fn normalize_module_path(
         .trim_end_matches(".ts")
         .trim_end_matches(".tsx");
 
-    let normalized_path = folder.join(file_name_without_extension);
+    let joined = folder.join(file_name_without_extension);
+    let normalized_path = joined.to_string_lossy();
+    let symbol = interner.get_or_intern(normalized_path);
 
-    Ok(NormalizedModulePath(normalized_path))
+    Ok(NormalizedModulePath(symbol))
 }
 
 pub fn resolve_import_path(
     project_root: &Path,
     current_folder: &Path,
     import_source: &str,
+    interner: &mut StringInterner,
 ) -> anyhow::Result<NormalizedModulePath> {
     let mut absolute_path = RelativePath::new(import_source).to_logical_path(current_folder);
 
     for ext in ["d.ts", "ts", "tsx"] {
         let with_ext = absolute_path.clone().with_extension(ext);
         if with_ext.is_file() {
-            return normalize_module_path(project_root, &with_ext);
+            return normalize_module_path(project_root, &with_ext, interner);
         }
     }
 
     absolute_path.push("index.ts");
-    normalize_module_path(project_root, &absolute_path)
+    normalize_module_path(project_root, &absolute_path, interner)
 }
