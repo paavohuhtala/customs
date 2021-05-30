@@ -68,7 +68,6 @@ Simply put, for now `customs` has less features. Perhaps most importantly it doe
 - Add some tests
 - Setup a CI pipeline
 - Report locally used exports separately vs completely dead code
-- Support .gitignore
 - Support JS files
 - Handle non-code imports (e.g CSS modules) without an ugly error message
 - Allow marking functions and modules as used with magic comments and/or config files

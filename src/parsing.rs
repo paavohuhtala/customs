@@ -312,12 +312,18 @@ fn parse_module(
 }
 
 pub fn parse_all_modules(root: &Path) -> HashMap<NormalizedModulePath, Module> {
-    walkdir::WalkDir::new(&root)
-        .same_file_system(true)
+    ignore::Walk::new(&root)
         .into_iter()
         .par_bridge()
         // TODO: don't silently ignore read errors?
-        .filter_map(|entry| entry.ok().filter(|entry| entry.file_type().is_file()))
+        .filter_map(|entry| {
+            entry.ok().filter(|entry| {
+                entry
+                    .file_type()
+                    .expect("This should never be stdin.")
+                    .is_file()
+            })
+        })
         .filter_map(|entry| {
             let file_path = entry.path();
             let file_name = file_path
@@ -337,7 +343,7 @@ pub fn parse_all_modules(root: &Path) -> HashMap<NormalizedModulePath, Module> {
                 return None;
             };
 
-            match parse_module(&root, file_path, module_kind) {
+            match parse_module(&root, &file_path, module_kind) {
                 Ok(module) => Some((module.normalized_path.clone(), module)),
                 Err(err) => {
                     eprintln!("Error while parsing {}: {}", file_path.display(), err);
