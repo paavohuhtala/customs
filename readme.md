@@ -63,15 +63,11 @@ Simply put, for now `customs` has less features. Perhaps most importantly it doe
 
 `ts-prune` analyses these cases, but my understanding (which might be entirely wrong) is that it does it using a simple "does this module contain this identifier" check. This is good enough in many cases, but strictly speaking it is insufficient in a language where identifiers can [shadow](https://en.wikipedia.org/wiki/Variable_shadowing) each other, which TypeScript definitely is. (In fact, TypeScript is more complicated than JS because types and values live in mostly different namespaces: you can have a type and a variable of the same name in the same file, and export them separately. Not to mention classes which are both types and values at the same time.) I might implement these later, either using the simple identifier check or a more elaborate light semantic analysis pass, which would take block scoping and shadowing into account.
 
-There are also some neat features from `ts-prune` which I haven't implemented into `customs` yet. Module paths are normalized as a part of the analysis, but these normalized paths are used in the output instead of the real original file paths. The tool also does not print line numbers, but adding them should be relatively easy as `swc` already includes source span information in the AST.
-
 ## ToDo
 
 - Add some tests
 - Setup a CI pipeline
 - Report locally used exports separately vs completely dead code
-- Show real file names in the output, not just normalized module paths
-- Include line numbers in the output
 - Support .gitignore
 - Support JS files
 - Handle non-code imports (e.g CSS modules) without an ugly error message

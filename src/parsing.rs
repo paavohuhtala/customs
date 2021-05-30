@@ -1,23 +1,56 @@
-use std::{borrow::Cow, collections::HashMap, ops::Deref, path::Path};
+use std::{borrow::Cow, collections::HashMap, ops::Deref, path::Path, sync::Arc};
 
 use anyhow::anyhow;
 use rayon::prelude::*;
-use swc_ecma_ast::{Decl, DefaultDecl, ModuleDecl, ModuleItem, Stmt};
+use swc_common::{FilePathMapping, SourceMap, Span};
+use swc_ecma_ast::{Decl, DefaultDecl, Ident, ModuleDecl, ModuleItem, ObjectPatProp, Pat, Stmt};
 
 use crate::dependency_graph::{
     normalize_module_path, resolve_import_path, Export, ExportKind, ExportName, Import, Module,
-    ModuleKind, NormalizedModulePath, Visibility,
+    ModuleKind, ModuleSourceAndLine, NormalizedModulePath, Visibility,
 };
+
+fn create_export_source(
+    module: &Module,
+    source_map: &SourceMap,
+    span: Span,
+) -> ModuleSourceAndLine {
+    let line = source_map
+        .lookup_line(span.lo())
+        .expect("The offset should always be in bounds")
+        .line;
+    ModuleSourceAndLine::new(module.source.clone(), line)
+}
+
+fn create_export_from_id<'a>(
+    module: &Module,
+    source_map: &SourceMap,
+    ident: &Ident,
+    kind: ExportKind,
+    visibility: Visibility,
+) -> (ExportName<'a>, Export) {
+    let line = source_map
+        .lookup_line(ident.span.lo())
+        .expect("The offset should always be in bounds")
+        .line;
+
+    let location = ModuleSourceAndLine::new(module.source.clone(), line);
+    let export = Export::new(kind, visibility, location);
+
+    let name = ExportName::Named(Cow::Owned(ident.sym.to_string()));
+
+    (name, export)
+}
 
 fn get_decl_exports(
     decl: &Decl,
-    results: &mut Vec<(String, Export)>,
     is_export_declaration: bool,
-    module_kind: ModuleKind,
+    module: &mut Module,
+    source_map: &SourceMap,
 ) {
     let should_export_value = is_export_declaration;
-    let should_export_type = is_export_declaration || module_kind.is_declaration();
-    let type_visibility = if module_kind.is_declaration() {
+    let should_export_type = is_export_declaration || module.kind.is_declaration();
+    let type_visibility = if module.kind.is_declaration() {
         Visibility::ImplicitlyExported
     } else {
         Visibility::Exported
@@ -26,84 +59,98 @@ fn get_decl_exports(
     match decl {
         // TODO is this correct with classes exported from d.ts files?
         Decl::Class(class) if should_export_value => {
-            results.push((
-                class.ident.sym.to_string(),
-                Export::new(ExportKind::Value, Visibility::Exported),
+            module.add_export(create_export_from_id(
+                module,
+                source_map,
+                &class.ident,
+                ExportKind::Value,
+                Visibility::Exported,
             ));
         }
         Decl::Fn(f) if should_export_value => {
-            results.push((
-                f.ident.sym.to_string(),
-                Export::new(ExportKind::Value, Visibility::Exported),
+            module.add_export(create_export_from_id(
+                module,
+                source_map,
+                &f.ident,
+                ExportKind::Value,
+                Visibility::Exported,
             ));
         }
         Decl::Var(var) if should_export_value => {
             for declarator in &var.decls {
                 match &declarator.name {
-                    swc_ecma_ast::Pat::Ident(id) => {
-                        results.push((
-                            id.id.sym.to_string(),
-                            Export::new(ExportKind::Value, Visibility::Exported),
+                    Pat::Ident(id) => {
+                        module.add_export(create_export_from_id(
+                            module,
+                            source_map,
+                            &id.id,
+                            ExportKind::Value,
+                            Visibility::Exported,
                         ));
                     }
-                    swc_ecma_ast::Pat::Array(_) => {
-                        todo!()
+                    Pat::Object(pat) => {
+                        for prop in pat.props.iter() {
+                            match prop {
+                                ObjectPatProp::KeyValue(_) | ObjectPatProp::Rest(_) => {}
+                                ObjectPatProp::Assign(assign) => {
+                                    module.add_export(create_export_from_id(
+                                        module,
+                                        source_map,
+                                        &assign.key,
+                                        ExportKind::Value,
+                                        Visibility::Exported,
+                                    ))
+                                }
+                            }
+                        }
                     }
-                    swc_ecma_ast::Pat::Rest(_) => {
-                        todo!()
-                    }
-                    swc_ecma_ast::Pat::Object(pat) => {
-                        results.extend(pat.props.iter().filter_map(|prop| match prop {
-                            swc_ecma_ast::ObjectPatProp::KeyValue(_) => None,
-                            swc_ecma_ast::ObjectPatProp::Assign(assign) => Some((
-                                assign.key.sym.to_string(),
-                                Export::new(ExportKind::Value, Visibility::Exported),
-                            )),
-                            swc_ecma_ast::ObjectPatProp::Rest(_) => None,
-                        }));
-                    }
-                    swc_ecma_ast::Pat::Assign(_) => {
-                        todo!()
-                    }
-                    swc_ecma_ast::Pat::Invalid(_) => {
-                        todo!()
-                    }
-                    swc_ecma_ast::Pat::Expr(_) => {
+                    // TODO: Are these even syntactically valid?
+                    Pat::Array(_)
+                    | Pat::Rest(_)
+                    | Pat::Assign(_)
+                    | Pat::Invalid(_)
+                    | Pat::Expr(_) => {
                         todo!()
                     }
                 }
             }
         }
         Decl::TsInterface(interface_decl) if should_export_type => {
-            results.push((
-                interface_decl.id.sym.to_string(),
-                Export::new(ExportKind::Type, type_visibility),
+            module.add_export(create_export_from_id(
+                module,
+                source_map,
+                &interface_decl.id,
+                ExportKind::Type,
+                type_visibility,
             ));
         }
         Decl::TsTypeAlias(type_alias_decl) if should_export_type => {
-            results.push((
-                type_alias_decl.id.sym.to_string(),
-                Export::new(ExportKind::Type, type_visibility),
+            module.add_export(create_export_from_id(
+                module,
+                source_map,
+                &type_alias_decl.id,
+                ExportKind::Type,
+                type_visibility,
             ));
         }
         Decl::TsEnum(enum_decl) if should_export_type => {
-            results.push((
-                enum_decl.id.sym.to_string(),
-                Export::new(ExportKind::Type, type_visibility),
+            module.add_export(create_export_from_id(
+                module,
+                source_map,
+                &enum_decl.id,
+                ExportKind::Type,
+                type_visibility,
             ));
-        }
-        Decl::TsModule(_) => {
-            // TODO: Do we need to handle typings files?
         }
         _ => {}
     }
 }
 
-fn get_decl_imports(
+fn parse_import_decl(
     root: &Path,
     current_folder: &Path,
     import_decl: swc_ecma_ast::ImportDecl,
-    imports: &mut HashMap<NormalizedModulePath, Vec<Import>>,
+    module: &mut Module,
 ) -> anyhow::Result<()> {
     use swc_ecma_ast::ImportSpecifier;
 
@@ -118,7 +165,8 @@ fn get_decl_imports(
     let normalized_import_source =
         resolve_import_path(&root, current_folder, import_decl.src.value.deref())?;
 
-    let module_imports = imports
+    let module_imports = module
+        .imported_modules
         .entry(normalized_import_source)
         .or_insert_with(|| Vec::new());
 
@@ -153,7 +201,6 @@ fn parse_module(
     file_path: &Path,
     module_kind: ModuleKind,
 ) -> anyhow::Result<Module<'static>> {
-    use swc_common::BytePos;
     use swc_ecma_parser::{lexer::Lexer, Parser, StringInput, Syntax, TsConfig};
 
     let tsconfig = TsConfig {
@@ -170,31 +217,39 @@ fn parse_module(
         .parent()
         .expect("A file path should always have a parent");
 
-    let content = std::fs::read_to_string(&file_path)?;
-    let input = StringInput::new(&content, BytePos(0), BytePos(content.len() as u32));
+    let source_map = SourceMap::new(FilePathMapping::empty());
+    let source_file = source_map.load_file(file_path)?;
+    let input = StringInput::from(source_file.deref());
+
     let lexer = Lexer::new(
         Syntax::Typescript(tsconfig),
         swc_ecma_parser::JscTarget::Es2020,
         input,
         None,
     );
+
+    let file_path = Arc::new(file_path.to_path_buf());
+
     let mut parser = Parser::new_from(lexer);
 
     // TODO put behind debug logging
     // println!("Parsing {}", file_path.to_string_lossy());
 
-    let module = parser
+    let swc_module = parser
         .parse_module()
         .map_err(|err| anyhow!("Failed to parse module: {:?}", err))?;
 
-    let mut named_exports = Vec::new();
-    let mut default_export: Option<ExportKind> = None;
-    let mut imported_modules = HashMap::new();
+    let mut module = Module::new(file_path.clone(), normalized_path, module_kind);
 
-    for item in module.body {
+    let mut default_export: Option<(ExportKind, ModuleSourceAndLine)> = None;
+
+    for item in swc_module.body {
         match item {
             ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) => {
-                get_decl_exports(&export_decl.decl, &mut named_exports, true, module_kind);
+                get_decl_exports(&export_decl.decl, true, &mut module, &source_map);
+            }
+            ModuleItem::Stmt(Stmt::Decl(decl)) if module_kind.is_declaration() => {
+                get_decl_exports(&decl, false, &mut module, &source_map)
             }
             ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(named_export)) => {
                 for specifier in &named_export.specifiers {
@@ -203,24 +258,31 @@ fn parse_module(
                             todo!("Namespace re-exports not supported yet.");
                         }
                         swc_ecma_ast::ExportSpecifier::Default(default) => {
-                            let name = default.exported.sym.to_string();
-                            named_exports.push((
-                                name,
-                                Export::new(ExportKind::Unknown, Visibility::Exported),
+                            module.add_export(create_export_from_id(
+                                &module,
+                                &source_map,
+                                &default.exported,
+                                ExportKind::Unknown,
+                                Visibility::Exported,
                             ));
                         }
                         swc_ecma_ast::ExportSpecifier::Named(named) => {
                             let name = named.exported.as_ref().unwrap_or(&named.orig);
-                            named_exports.push((
-                                name.sym.to_string(),
-                                Export::new(ExportKind::Unknown, Visibility::Exported),
-                            ));
+
+                            module.add_export(create_export_from_id(
+                                &module,
+                                &source_map,
+                                name,
+                                ExportKind::Unknown,
+                                Visibility::Exported,
+                            ))
                         }
                     }
                 }
             }
-            ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(_)) => {
-                default_export = Some(ExportKind::Value);
+            ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(default_export_expr)) => {
+                let location = create_export_source(&module, &source_map, default_export_expr.span);
+                default_export = Some((ExportKind::Value, location));
             }
             ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(decl)) => {
                 let export_kind = match decl.decl {
@@ -228,33 +290,25 @@ fn parse_module(
                     DefaultDecl::TsInterfaceDecl(_) => ExportKind::Type,
                 };
 
-                default_export = Some(export_kind);
+                let location = create_export_source(&&module, &source_map, decl.span);
+                default_export = Some((export_kind, location));
             }
             ModuleItem::ModuleDecl(ModuleDecl::Import(import_decl)) => {
-                get_decl_imports(root, current_folder, import_decl, &mut imported_modules)?;
+                parse_import_decl(root, current_folder, import_decl, &mut module)?;
             }
-            ModuleItem::Stmt(Stmt::Decl(decl)) if module_kind.is_declaration() => {
-                get_decl_exports(&decl, &mut named_exports, false, module_kind)
-            }
+
             _ => {}
         }
     }
 
-    let mut exports = named_exports
-        .into_iter()
-        .map(|(name, export)| (ExportName::Named(Cow::Owned(name)), export))
-        .collect::<HashMap<_, _>>();
-
-    if let Some(kind) = default_export {
-        exports.insert(ExportName::Default, Export::new(kind, Visibility::Exported));
+    if let Some((kind, location)) = default_export {
+        module.add_export((
+            ExportName::Default,
+            Export::new(kind, Visibility::Exported, location),
+        ));
     }
 
-    Ok(Module::new(
-        normalized_path,
-        exports,
-        imported_modules,
-        module_kind.is_declaration(),
-    ))
+    Ok(module)
 }
 
 pub fn parse_all_modules(root: &Path) -> HashMap<NormalizedModulePath, Module> {
@@ -284,13 +338,9 @@ pub fn parse_all_modules(root: &Path) -> HashMap<NormalizedModulePath, Module> {
             };
 
             match parse_module(&root, file_path, module_kind) {
-                Ok(module) => Some((module.path.clone(), module)),
+                Ok(module) => Some((module.normalized_path.clone(), module)),
                 Err(err) => {
-                    eprintln!(
-                        "Error while parsing {}: {}",
-                        file_path.to_string_lossy(),
-                        err
-                    );
+                    eprintln!("Error while parsing {}: {}", file_path.display(), err);
                     None
                 }
             }

@@ -2,8 +2,10 @@ use std::{
     borrow::Cow,
     cell::Cell,
     collections::HashMap,
+    fmt::Display,
     ops::Deref,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use anyhow::Context;
@@ -20,7 +22,7 @@ impl Deref for NormalizedModulePath {
     }
 }
 
-#[derive(PartialEq, Eq, Hash, Debug, Clone)]
+#[derive(PartialEq, Eq, Hash, Debug, Clone, PartialOrd, Ord)]
 pub enum ExportName<'a> {
     Named(Cow<'a, str>),
     Default,
@@ -30,24 +32,55 @@ impl ExportName<'_> {
     pub fn get_name(&self) -> &Cow<'_, str> {
         match self {
             ExportName::Named(name) => name,
-            ExportName::Default => &Cow::Borrowed("Default"),
+            ExportName::Default => &Cow::Borrowed("default"),
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+pub struct ModuleSourceAndLine {
+    path: Arc<PathBuf>,
+    zero_based_line: usize,
+}
+
+impl ModuleSourceAndLine {
+    pub fn new(path: Arc<PathBuf>, zero_based_line: usize) -> ModuleSourceAndLine {
+        ModuleSourceAndLine {
+            path: path.clone(),
+            zero_based_line,
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn line(&self) -> usize {
+        self.zero_based_line + 1
+    }
+}
+
+impl Display for ModuleSourceAndLine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.path.display(), self.line())
+    }
+}
+
+#[derive(Debug)]
 pub struct Export {
     pub usage: Cell<Usage>,
     pub kind: ExportKind,
     pub visibility: Visibility,
+    pub location: ModuleSourceAndLine,
 }
 
 impl Export {
-    pub fn new(kind: ExportKind, visibility: Visibility) -> Self {
+    pub fn new(kind: ExportKind, visibility: Visibility, location: ModuleSourceAndLine) -> Self {
         Export {
             usage: Default::default(),
             kind,
             visibility,
+            location,
         }
     }
 }
@@ -71,28 +104,28 @@ pub enum Import {
     Wildcard,
 }
 
-#[derive(Debug, Clone)]
 pub struct Module<'a> {
-    pub path: NormalizedModulePath,
+    pub kind: ModuleKind,
+    pub normalized_path: NormalizedModulePath,
     pub exports: HashMap<ExportName<'a>, Export>,
     pub imported_modules: HashMap<NormalizedModulePath, Vec<Import>>,
+    pub source: Arc<PathBuf>,
     is_wildcard_imported: Cell<bool>,
-    is_dts: bool,
 }
 
 impl<'a> Module<'a> {
     pub fn new(
-        path: NormalizedModulePath,
-        exports: HashMap<ExportName<'a>, Export>,
-        imported_modules: HashMap<NormalizedModulePath, Vec<Import>>,
-        is_dts: bool,
+        source_path: Arc<PathBuf>,
+        normalized_path: NormalizedModulePath,
+        kind: ModuleKind,
     ) -> Module<'a> {
         Module {
-            path,
-            exports,
-            imported_modules,
+            kind,
+            source: source_path,
+            normalized_path,
+            exports: HashMap::new(),
+            imported_modules: HashMap::new(),
             is_wildcard_imported: Default::default(),
-            is_dts,
         }
     }
 
@@ -102,6 +135,10 @@ impl<'a> Module<'a> {
 
     pub fn mark_wildcard_imported(&self) {
         self.is_wildcard_imported.set(true)
+    }
+
+    pub fn add_export(&mut self, (name, export): (ExportName<'a>, Export)) {
+        self.exports.insert(name, export);
     }
 }
 
