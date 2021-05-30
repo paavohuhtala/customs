@@ -48,7 +48,7 @@ fn main() -> anyhow::Result<()> {
         resolution_duration.as_millis()
     );
 
-    report_unused_dependencies(modules, opts.format);
+    report_unused_dependencies(modules, opts.format)?;
 
     println!("Finished in {}ms", start_time.elapsed().as_millis());
 

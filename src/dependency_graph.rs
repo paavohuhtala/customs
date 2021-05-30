@@ -37,6 +37,15 @@ impl ExportName<'_> {
     }
 }
 
+impl Display for ExportName<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExportName::Named(name) => write!(f, "{}", name),
+            ExportName::Default => write!(f, "default"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ModuleSourceAndLine {
     path: Arc<PathBuf>,

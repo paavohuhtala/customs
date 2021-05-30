@@ -1,7 +1,10 @@
 use std::collections::HashMap;
+use std::io::stdout;
+use std::io::Write;
 use std::str::FromStr;
 
 use anyhow::anyhow;
+use itertools::Itertools;
 
 use crate::dependency_graph::ExportName;
 use crate::dependency_graph::ModuleSourceAndLine;
@@ -29,7 +32,7 @@ impl OutputFormat {
     pub const ALL_FORMATS: &'static [&'static str] = &["clean", "compact"];
 }
 
-fn report_clean(modules: HashMap<NormalizedModulePath, Module>) {
+fn report_clean(modules: HashMap<NormalizedModulePath, Module>) -> anyhow::Result<()> {
     let mut sorted_modules = modules
         .into_iter()
         .filter(|(_, module)| !module.is_wildcard_imported())
@@ -63,10 +66,12 @@ fn report_clean(modules: HashMap<NormalizedModulePath, Module>) {
     if !found_any {
         println!("No unused exports!");
     }
+
+    Ok(())
 }
 
-fn report_compact(modules: HashMap<NormalizedModulePath, Module>) {
-    let mut sorted_exports = modules
+fn report_compact(modules: HashMap<NormalizedModulePath, Module>) -> anyhow::Result<()> {
+    let sorted_exports = modules
         .into_iter()
         .filter(|(_, module)| !module.is_wildcard_imported())
         .flat_map(|(_, module)| {
@@ -74,31 +79,32 @@ fn report_compact(modules: HashMap<NormalizedModulePath, Module>) {
                 .exports
                 .into_iter()
                 .filter(|(_, export)| !export.usage.get().is_used())
+                .sorted_by_key(|(_, export)| export.location.line())
         })
         .map(|(name, export)| (name, export.location))
+        .sorted_by(|(_, a_location), (_, b_location)| a_location.path().cmp(b_location.path()))
         .collect::<Vec<(ExportName, ModuleSourceAndLine)>>();
-
-    sorted_exports.sort_by(|(_, a_location), (_, b_location)| {
-        a_location
-            .path()
-            .cmp(b_location.path())
-            .then_with(|| a_location.line().cmp(&b_location.line()))
-    });
 
     if sorted_exports.len() == 0 {
         println!("No unused exports!");
-        return;
+        return Ok(());
     }
 
+    let mut stdout = stdout();
+
     for (name, location) in sorted_exports {
-        println!("{} - {}", location, name.get_name());
+        writeln!(&mut stdout, "{} - {}", location, name)?;
     }
+
+    stdout.flush()?;
+
+    Ok(())
 }
 
 pub fn report_unused_dependencies(
     modules: HashMap<NormalizedModulePath, Module>,
     format: OutputFormat,
-) {
+) -> anyhow::Result<()> {
     match format {
         OutputFormat::Clean => report_clean(modules),
         OutputFormat::Compact => report_compact(modules),
