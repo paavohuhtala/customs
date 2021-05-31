@@ -312,7 +312,12 @@ fn parse_module(
 }
 
 pub fn parse_all_modules(root: &Path) -> HashMap<NormalizedModulePath, Module> {
-    ignore::Walk::new(&root)
+    let walker = ignore::WalkBuilder::new(root)
+        .standard_filters(true)
+        .add_custom_ignore_filename(".customsignore")
+        .build();
+
+    walker
         .into_iter()
         .par_bridge()
         // TODO: don't silently ignore read errors?
