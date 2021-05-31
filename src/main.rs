@@ -1,32 +1,27 @@
-use std::{convert::TryFrom, path::PathBuf, time::Instant};
+use std::time::Instant;
 
 mod dependency_graph;
 
 mod analysis;
+mod config;
 mod parsing;
 mod reporting;
 
 use structopt::StructOpt;
 
 use crate::analysis::analyze_imports;
+use crate::config::Config;
+use crate::config::Opts;
 use crate::parsing::parse_all_modules;
-use crate::reporting::{report_unused_dependencies, OutputFormat};
-
-#[derive(StructOpt)]
-#[structopt(version = "0.1", author = "Paavo Huhtala <paavo.huhtala@gmail.com>")]
-struct Opts {
-    target_dir: String,
-    #[structopt(short, long, default_value = "compact", possible_values = OutputFormat::ALL_FORMATS)]
-    format: OutputFormat,
-}
+use crate::reporting::report_unused_dependencies;
 
 fn main() -> anyhow::Result<()> {
     let opts = Opts::from_args();
-    let root = PathBuf::try_from(opts.target_dir)?;
+    let config = Config::from_opts(opts);
 
     let start_time = Instant::now();
 
-    let modules = parse_all_modules(&root);
+    let modules = parse_all_modules(&config);
 
     let finished_parse_time = Instant::now();
     let parse_duration = finished_parse_time - start_time;
@@ -42,7 +37,7 @@ fn main() -> anyhow::Result<()> {
 
     println!("Resolved imports in {} ms", resolution_duration.as_millis());
 
-    report_unused_dependencies(modules, opts.format)?;
+    report_unused_dependencies(modules, &config)?;
 
     println!("Finished in {}ms", start_time.elapsed().as_millis());
 

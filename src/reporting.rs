@@ -1,38 +1,20 @@
 use std::collections::HashMap;
 use std::io::stdout;
 use std::io::Write;
-use std::str::FromStr;
 
-use anyhow::anyhow;
 use itertools::Itertools;
 
+use crate::config::Config;
+use crate::config::OutputFormat;
+use crate::dependency_graph::ExportKind;
 use crate::dependency_graph::ExportName;
 use crate::dependency_graph::ModuleSourceAndLine;
 use crate::dependency_graph::{Module, NormalizedModulePath};
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum OutputFormat {
-    Clean,
-    Compact,
-}
-
-impl FromStr for OutputFormat {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "clean" => Ok(Self::Clean),
-            "compact" => Ok(Self::Compact),
-            _ => Err(anyhow!("Unknown output format: {}", s)),
-        }
-    }
-}
-
-impl OutputFormat {
-    pub const ALL_FORMATS: &'static [&'static str] = &["clean", "compact"];
-}
-
-fn report_clean(modules: HashMap<NormalizedModulePath, Module>) -> anyhow::Result<()> {
+fn report_clean(
+    modules: HashMap<NormalizedModulePath, Module>,
+    _config: &Config,
+) -> anyhow::Result<()> {
     let mut sorted_modules = modules
         .into_iter()
         .filter(|(_, module)| !module.is_wildcard_imported())
@@ -70,7 +52,12 @@ fn report_clean(modules: HashMap<NormalizedModulePath, Module>) -> anyhow::Resul
     Ok(())
 }
 
-fn report_compact(modules: HashMap<NormalizedModulePath, Module>) -> anyhow::Result<()> {
+fn report_compact(
+    modules: HashMap<NormalizedModulePath, Module>,
+    config: &Config,
+) -> anyhow::Result<()> {
+    let mut unknown_exports = 0;
+
     let sorted_exports = modules
         .into_iter()
         .filter(|(_, module)| !module.is_wildcard_imported())
@@ -79,6 +66,17 @@ fn report_compact(modules: HashMap<NormalizedModulePath, Module>) -> anyhow::Res
                 .exports
                 .into_iter()
                 .filter(|(_, export)| !export.usage.get().is_used())
+                .filter(|(_, export)| {
+                    if export.kind.matches_analyze_target(config.analyze_target) {
+                        return true;
+                    }
+
+                    if export.kind == ExportKind::Unknown {
+                        unknown_exports += 1;
+                    }
+
+                    false
+                })
                 .sorted_by_key(|(_, export)| export.location.line())
         })
         .map(|(name, export)| (name, export.location))
@@ -96,6 +94,21 @@ fn report_compact(modules: HashMap<NormalizedModulePath, Module>) -> anyhow::Res
         writeln!(&mut stdout, "{} - {}", location, name)?;
     }
 
+    if unknown_exports > 0 {
+        let exports_label = if unknown_exports == 1 {
+            "export"
+        } else {
+            "exports"
+        };
+
+        println!(
+            "WARNING: Filtered out {} {} which can't be determined to match the current analysis target ({})",
+            unknown_exports,
+            exports_label,
+            config.analyze_target.as_str()
+        );
+    }
+
     stdout.flush()?;
 
     Ok(())
@@ -103,10 +116,10 @@ fn report_compact(modules: HashMap<NormalizedModulePath, Module>) -> anyhow::Res
 
 pub fn report_unused_dependencies(
     modules: HashMap<NormalizedModulePath, Module>,
-    format: OutputFormat,
+    config: &Config,
 ) -> anyhow::Result<()> {
-    match format {
-        OutputFormat::Clean => report_clean(modules),
-        OutputFormat::Compact => report_compact(modules),
+    match config.format {
+        OutputFormat::Clean => report_clean(modules, config),
+        OutputFormat::Compact => report_compact(modules, config),
     }
 }

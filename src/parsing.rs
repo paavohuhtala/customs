@@ -5,9 +5,12 @@ use rayon::prelude::*;
 use swc_common::{FilePathMapping, SourceMap, Span};
 use swc_ecma_ast::{Decl, DefaultDecl, Ident, ModuleDecl, ModuleItem, ObjectPatProp, Pat, Stmt};
 
-use crate::dependency_graph::{
-    normalize_module_path, resolve_import_path, Export, ExportKind, ExportName, Import, Module,
-    ModuleKind, ModuleSourceAndLine, NormalizedModulePath, Visibility,
+use crate::{
+    config::Config,
+    dependency_graph::{
+        normalize_module_path, resolve_import_path, Export, ExportKind, ExportName, Import, Module,
+        ModuleKind, ModuleSourceAndLine, NormalizedModulePath, Visibility,
+    },
 };
 
 fn create_export_source(
@@ -311,8 +314,8 @@ fn parse_module(
     Ok(module)
 }
 
-pub fn parse_all_modules(root: &Path) -> HashMap<NormalizedModulePath, Module> {
-    let walker = ignore::WalkBuilder::new(root)
+pub fn parse_all_modules(config: &Config) -> HashMap<NormalizedModulePath, Module> {
+    let walker = ignore::WalkBuilder::new(&config.root)
         .standard_filters(true)
         .add_custom_ignore_filename(".customsignore")
         .build();
@@ -348,7 +351,7 @@ pub fn parse_all_modules(root: &Path) -> HashMap<NormalizedModulePath, Module> {
                 return None;
             };
 
-            match parse_module(&root, &file_path, module_kind) {
+            match parse_module(&config.root, &file_path, module_kind) {
                 Ok(module) => Some((module.normalized_path.clone(), module)),
                 Err(err) => {
                     eprintln!("Error while parsing {}: {}", file_path.display(), err);

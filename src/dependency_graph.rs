@@ -11,6 +11,8 @@ use std::{
 use anyhow::Context;
 use relative_path::RelativePath;
 
+use crate::config::AnalyzeTarget;
+
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
 pub struct NormalizedModulePath(PathBuf);
 
@@ -169,6 +171,17 @@ pub enum ExportKind {
     Type,
     Value,
     Unknown,
+}
+
+impl ExportKind {
+    pub fn matches_analyze_target(self, target: AnalyzeTarget) -> bool {
+        match (self, target) {
+            (_, AnalyzeTarget::All) => true,
+            (ExportKind::Type, AnalyzeTarget::Types) => true,
+            (ExportKind::Value, AnalyzeTarget::Values) => true,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]

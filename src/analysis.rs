@@ -9,8 +9,8 @@ pub fn analyze_imports(modules: &std::collections::HashMap<NormalizedModulePath,
                 None => {
                     println!(
                         "WARNING: Failed to resolve module {} (in {})",
-                        import_path.to_string_lossy(),
-                        path.to_string_lossy()
+                        import_path.display(),
+                        path.display()
                     );
                 }
                 Some(source_module) => {
@@ -34,8 +34,8 @@ pub fn analyze_imports(modules: &std::collections::HashMap<NormalizedModulePath,
                                 println!(
                                     "Failed to resolve export {} in module {} (imported from {})",
                                     key,
-                                    import_path.to_string_lossy(),
-                                    path.to_string_lossy(),
+                                    import_path.display(),
+                                    path.display(),
                                 );
                             }
                             Some(export) => {
