@@ -5,12 +5,12 @@ use structopt::StructOpt;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum OutputFormat {
-    Clean,
-    Compact,
+    Text,
+    Json,
 }
 
 impl OutputFormat {
-    pub const ALL_FORMATS: &'static [&'static str] = &["clean", "compact"];
+    pub const ALL_FORMATS: &'static [&'static str] = &["text", "json"];
 }
 
 impl FromStr for OutputFormat {
@@ -18,8 +18,8 @@ impl FromStr for OutputFormat {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "clean" => Ok(Self::Clean),
-            "compact" => Ok(Self::Compact),
+            "text" => Ok(Self::Text),
+            "json" => Ok(Self::Json),
             _ => Err(anyhow!("Unknown output format: {}", s)),
         }
     }
@@ -35,6 +35,7 @@ pub enum AnalyzeTarget {
 impl AnalyzeTarget {
     pub const ALL_TARGETS: &'static [&'static str] = &["types", "values", "all"];
 
+    #[allow(dead_code)]
     pub fn as_str(self) -> &'static str {
         match self {
             AnalyzeTarget::Types => "types",
@@ -61,7 +62,7 @@ impl FromStr for AnalyzeTarget {
 #[structopt(version = "0.1", author = "Paavo Huhtala <paavo.huhtala@gmail.com>")]
 pub struct Opts {
     target_dir: PathBuf,
-    #[structopt(short, long, default_value = "compact", possible_values = OutputFormat::ALL_FORMATS)]
+    #[structopt(short, long, default_value = "text", possible_values = OutputFormat::ALL_FORMATS)]
     format: OutputFormat,
 
     #[structopt(short, long, default_value = "all", possible_values = AnalyzeTarget::ALL_TARGETS)]

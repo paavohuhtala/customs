@@ -1,7 +1,9 @@
 use std::{borrow::Cow, collections::HashMap, ops::Deref, path::Path, sync::Arc};
 
 use anyhow::anyhow;
+use lazy_static::lazy_static;
 use rayon::prelude::*;
+use regex::Regex;
 use swc_common::{FilePathMapping, SourceMap, Span};
 use swc_ecma_ast::{Decl, DefaultDecl, Ident, ModuleDecl, ModuleItem, ObjectPatProp, Pat, Stmt};
 
@@ -149,6 +151,16 @@ fn get_decl_exports(
     }
 }
 
+fn normalize_package_import(import_source: &str) -> Option<String> {
+    lazy_static! {
+        // Parses the package name from an import source as capture group #1
+        static ref PACKAGE_NAME_RE: Regex = Regex::new("((:?@[^/]+/[^/]+)|(:?[^@^/]*)).*").unwrap();
+    }
+
+    let captures = PACKAGE_NAME_RE.captures(import_source)?;
+    Some(captures.get(1)?.as_str().to_string())
+}
+
 fn parse_import_decl(
     root: &Path,
     current_folder: &Path,
@@ -157,9 +169,20 @@ fn parse_import_decl(
 ) -> anyhow::Result<()> {
     use swc_ecma_ast::ImportSpecifier;
 
-    // If this doesn't start with . it's a global module -> bail
-    // TODO: is there a better way to detect this?
+    // If this doesn't start with . it's a global module -> add it to global modules
     if !import_decl.src.value.starts_with('.') {
+        match normalize_package_import(&import_decl.src.value) {
+            Some(package) => {
+                module.imported_packages.insert(package);
+            }
+            None => {
+                println!(
+                    "WARNING: Failed to normalize package import \"{}\"",
+                    import_decl.src.value
+                );
+            }
+        }
+
         return Ok(());
     }
 

@@ -4,42 +4,84 @@ mod dependency_graph;
 
 mod analysis;
 mod config;
+mod package_json;
 mod parsing;
 mod reporting;
 
+use analysis::find_unused_exports;
+use reporting::report_unused_dependencies;
 use structopt::StructOpt;
 
-use crate::analysis::analyze_imports;
+use crate::analysis::find_unused_dependencies;
+use crate::analysis::resolve_module_imports;
 use crate::config::Config;
 use crate::config::Opts;
+use crate::package_json::find_and_read_package_json;
 use crate::parsing::parse_all_modules;
-use crate::reporting::report_unused_dependencies;
+use crate::reporting::report_unused_exports;
 
 fn main() -> anyhow::Result<()> {
     let opts = Opts::from_args();
     let config = Config::from_opts(opts);
 
-    let start_time = Instant::now();
+    let _timer = ScopedTimer::new("Total");
 
-    let modules = parse_all_modules(&config);
+    let modules = {
+        let _timer = ScopedTimer::new("Parsing");
+        let modules = parse_all_modules(&config);
+        println!("Parsed {} modules", modules.len());
+        modules
+    };
 
-    let finished_parse_time = Instant::now();
-    let parse_duration = finished_parse_time - start_time;
-    println!(
-        "Parsed {} modules in {} ms",
-        modules.len(),
-        parse_duration.as_millis()
-    );
+    {
+        let _timer = ScopedTimer::new("Import resolution");
+        resolve_module_imports(&modules);
+    }
 
-    analyze_imports(&modules);
+    let unused_dependencies = {
+        let _timer = ScopedTimer::new("Unused dependency analysis");
 
-    let resolution_duration = finished_parse_time.elapsed();
+        let package_json = find_and_read_package_json(&config.root)?;
 
-    println!("Resolved imports in {} ms", resolution_duration.as_millis());
+        match package_json {
+            Some(package_json) => Some(find_unused_dependencies(&modules, &package_json, &config)),
+            None => {
+                println!("WARNING: Failed to find package.json, skipping dependency analysis.");
+                None
+            }
+        }
+    };
 
-    report_unused_dependencies(modules, &config)?;
+    let unused_exports = {
+        let _timer = ScopedTimer::new("Unused exports analysis");
+        find_unused_exports(modules, &config)
+    };
 
-    println!("Finished in {}ms", start_time.elapsed().as_millis());
+    report_unused_exports(unused_exports, &config)?;
+
+    if let Some(dependencies) = unused_dependencies {
+        report_unused_dependencies(dependencies, &config);
+    }
 
     Ok(())
+}
+
+struct ScopedTimer {
+    name: &'static str,
+    started_at: Instant,
+}
+
+impl ScopedTimer {
+    pub fn new(name: &'static str) -> Self {
+        ScopedTimer {
+            name,
+            started_at: Instant::now(),
+        }
+    }
+}
+
+impl Drop for ScopedTimer {
+    fn drop(&mut self) {
+        println!("{}: {}ms", self.name, self.started_at.elapsed().as_millis());
+    }
 }

@@ -1,7 +1,7 @@
 use std::{
     borrow::Cow,
     cell::Cell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::Display,
     ops::Deref,
     path::{Path, PathBuf},
@@ -24,17 +24,23 @@ impl Deref for NormalizedModulePath {
     }
 }
 
-#[derive(PartialEq, Eq, Hash, Debug, Clone, PartialOrd, Ord)]
+#[derive(PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub enum ExportName<'a> {
     Named(Cow<'a, str>),
     Default,
 }
 
+#[derive(Debug)]
+pub enum OwnedExportName {
+    Named(String),
+    Default,
+}
+
 impl ExportName<'_> {
-    pub fn get_name(&self) -> &Cow<'_, str> {
+    pub fn to_owned(&self) -> OwnedExportName {
         match self {
-            ExportName::Named(name) => name,
-            ExportName::Default => &Cow::Borrowed("default"),
+            ExportName::Named(name) => OwnedExportName::Named(name.to_string()),
+            ExportName::Default => OwnedExportName::Default,
         }
     }
 }
@@ -44,6 +50,14 @@ impl Display for ExportName<'_> {
         match self {
             ExportName::Named(name) => write!(f, "{}", name),
             ExportName::Default => write!(f, "default"),
+        }
+    }
+}
+impl Display for OwnedExportName {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            OwnedExportName::Named(name) => write!(f, "{}", name),
+            OwnedExportName::Default => write!(f, "default"),
         }
     }
 }
@@ -120,6 +134,7 @@ pub struct Module<'a> {
     pub normalized_path: NormalizedModulePath,
     pub exports: HashMap<ExportName<'a>, Export>,
     pub imported_modules: HashMap<NormalizedModulePath, Vec<Import>>,
+    pub imported_packages: HashSet<String>,
     pub source: Arc<PathBuf>,
     is_wildcard_imported: Cell<bool>,
 }
@@ -136,6 +151,7 @@ impl<'a> Module<'a> {
             normalized_path,
             exports: HashMap::new(),
             imported_modules: HashMap::new(),
+            imported_packages: HashSet::new(),
             is_wildcard_imported: Default::default(),
         }
     }
