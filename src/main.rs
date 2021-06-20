@@ -1,28 +1,37 @@
-use std::time::Instant;
+use std::{path::PathBuf, time::Instant};
 
-mod dependency_graph;
-
-mod analysis;
-mod config;
-mod package_json;
-mod parsing;
-mod reporting;
-
-use analysis::find_unused_exports;
-use reporting::report_unused_dependencies;
+use customs_analysis::{
+    analysis::{find_unused_dependencies, find_unused_exports, resolve_module_imports},
+    config::{AnalyzeTarget, Config, OutputFormat},
+    package_json::find_and_read_package_json,
+    parsing::parse_all_modules,
+    reporting::{report_unused_dependencies, report_unused_exports},
+};
 use structopt::StructOpt;
 
-use crate::analysis::find_unused_dependencies;
-use crate::analysis::resolve_module_imports;
-use crate::config::Config;
-use crate::config::Opts;
-use crate::package_json::find_and_read_package_json;
-use crate::parsing::parse_all_modules;
-use crate::reporting::report_unused_exports;
+#[derive(StructOpt)]
+#[structopt(version = "0.1", author = "Paavo Huhtala <paavo.huhtala@gmail.com>")]
+struct Opts {
+    target_dir: PathBuf,
+    #[structopt(short, long, default_value = "text", possible_values = OutputFormat::ALL_FORMATS)]
+    format: OutputFormat,
+
+    #[structopt(short, long, default_value = "all", possible_values = AnalyzeTarget::ALL_TARGETS)]
+    analyze: AnalyzeTarget,
+}
+
+impl Opts {
+    pub fn into_config(self) -> Config {
+        Config {
+            root: self.target_dir,
+            format: self.format,
+            analyze_target: self.analyze,
+        }
+    }
+}
 
 fn main() -> anyhow::Result<()> {
-    let opts = Opts::from_args();
-    let config = Config::from_opts(opts);
+    let config = Opts::from_args().into_config();
 
     let _timer = ScopedTimer::new("Total");
 

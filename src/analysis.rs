@@ -1,12 +1,11 @@
-use std::{borrow::Cow, collections::HashSet};
+use std::collections::HashSet;
 
 use itertools::Itertools;
 
 use crate::{
     config::Config,
     dependency_graph::{
-        ExportName, Import, Module, ModuleSourceAndLine, NormalizedModulePath, OwnedExportName,
-        Usage,
+        ExportName, ImportName, Module, ModuleSourceAndLine, NormalizedModulePath, Usage,
     },
     package_json::PackageJson,
 };
@@ -30,9 +29,9 @@ pub fn resolve_module_imports(modules: &std::collections::HashMap<NormalizedModu
 
                     for import in imports {
                         let key = match import {
-                            Import::Named(name) => ExportName::Named(Cow::Borrowed(name)),
-                            Import::Default => ExportName::Default,
-                            Import::Wildcard => {
+                            ImportName::Named(name) => ExportName::Named(name.clone()),
+                            ImportName::Default => ExportName::Default,
+                            ImportName::Wildcard => {
                                 source_module.mark_wildcard_imported();
                                 break;
                             }
@@ -70,7 +69,7 @@ pub fn resolve_module_imports(modules: &std::collections::HashMap<NormalizedModu
 }
 
 pub struct UnusedExportsResults {
-    pub sorted_exports: Vec<(OwnedExportName, ModuleSourceAndLine)>,
+    pub sorted_exports: Vec<(ExportName, ModuleSourceAndLine)>,
 }
 
 pub fn find_unused_exports(
@@ -88,8 +87,8 @@ pub fn find_unused_exports(
                 .filter(|(_, export)| export.kind.matches_analyze_target(config.analyze_target))
                 .sorted_unstable_by_key(|(_, export)| export.location.line())
         })
-        .map(|(name, export)| (name.to_owned(), export.location))
-        .collect::<Vec<(OwnedExportName, ModuleSourceAndLine)>>();
+        .map(|(name, export)| (name, export.location))
+        .collect::<Vec<(ExportName, ModuleSourceAndLine)>>();
 
     sorted_exports.sort_unstable_by(|(_, a_location), (_, b_location)| {
         a_location.path().cmp(b_location.path())

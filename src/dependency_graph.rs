@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     cell::Cell,
     collections::{HashMap, HashSet},
     fmt::Display,
@@ -10,6 +9,7 @@ use std::{
 
 use anyhow::Context;
 use relative_path::RelativePath;
+use swc_atoms::JsWord;
 
 use crate::config::AnalyzeTarget;
 
@@ -25,39 +25,16 @@ impl Deref for NormalizedModulePath {
 }
 
 #[derive(PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
-pub enum ExportName<'a> {
-    Named(Cow<'a, str>),
+pub enum ExportName {
+    Named(JsWord),
     Default,
 }
 
-#[derive(Debug)]
-pub enum OwnedExportName {
-    Named(String),
-    Default,
-}
-
-impl ExportName<'_> {
-    pub fn to_owned(&self) -> OwnedExportName {
-        match self {
-            ExportName::Named(name) => OwnedExportName::Named(name.to_string()),
-            ExportName::Default => OwnedExportName::Default,
-        }
-    }
-}
-
-impl Display for ExportName<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for ExportName {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             ExportName::Named(name) => write!(f, "{}", name),
             ExportName::Default => write!(f, "default"),
-        }
-    }
-}
-impl Display for OwnedExportName {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            OwnedExportName::Named(name) => write!(f, "{}", name),
-            OwnedExportName::Default => write!(f, "default"),
         }
     }
 }
@@ -123,28 +100,28 @@ impl Usage {
 }
 
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
-pub enum Import {
-    Named(String),
+pub enum ImportName {
+    Named(JsWord),
     Default,
     Wildcard,
 }
 
-pub struct Module<'a> {
+pub struct Module {
     pub kind: ModuleKind,
     pub normalized_path: NormalizedModulePath,
-    pub exports: HashMap<ExportName<'a>, Export>,
-    pub imported_modules: HashMap<NormalizedModulePath, Vec<Import>>,
+    pub exports: HashMap<ExportName, Export>,
+    pub imported_modules: HashMap<NormalizedModulePath, Vec<ImportName>>,
     pub imported_packages: HashSet<String>,
     pub source: Arc<PathBuf>,
     is_wildcard_imported: Cell<bool>,
 }
 
-impl<'a> Module<'a> {
+impl Module {
     pub fn new(
         source_path: Arc<PathBuf>,
         normalized_path: NormalizedModulePath,
         kind: ModuleKind,
-    ) -> Module<'a> {
+    ) -> Module {
         Module {
             kind,
             source: source_path,
@@ -164,7 +141,7 @@ impl<'a> Module<'a> {
         self.is_wildcard_imported.set(true)
     }
 
-    pub fn add_export(&mut self, (name, export): (ExportName<'a>, Export)) {
+    pub fn add_export(&mut self, (name, export): (ExportName, Export)) {
         self.exports.insert(name, export);
     }
 }

@@ -1,17 +1,18 @@
-use std::{borrow::Cow, collections::HashMap, ops::Deref, path::Path, sync::Arc};
+use std::{collections::HashMap, ops::Deref, path::Path, sync::Arc};
 
 use anyhow::anyhow;
 use lazy_static::lazy_static;
 use rayon::prelude::*;
 use regex::Regex;
+
 use swc_common::{FilePathMapping, SourceMap, Span};
 use swc_ecma_ast::{Decl, DefaultDecl, Ident, ModuleDecl, ModuleItem, ObjectPatProp, Pat, Stmt};
 
 use crate::{
     config::Config,
     dependency_graph::{
-        normalize_module_path, resolve_import_path, Export, ExportKind, ExportName, Import, Module,
-        ModuleKind, ModuleSourceAndLine, NormalizedModulePath, Visibility,
+        normalize_module_path, resolve_import_path, Export, ExportKind, ExportName, ImportName,
+        Module, ModuleKind, ModuleSourceAndLine, NormalizedModulePath, Visibility,
     },
 };
 
@@ -27,13 +28,13 @@ fn create_export_source(
     ModuleSourceAndLine::new(module.source.clone(), line)
 }
 
-fn create_export_from_id<'a>(
+fn create_export_from_id(
     module: &Module,
     source_map: &SourceMap,
     ident: &Ident,
     kind: ExportKind,
     visibility: Visibility,
-) -> (ExportName<'a>, Export) {
+) -> (ExportName, Export) {
     let line = source_map
         .lookup_line(ident.span.lo())
         .expect("The offset should always be in bounds")
@@ -42,7 +43,7 @@ fn create_export_from_id<'a>(
     let location = ModuleSourceAndLine::new(module.source.clone(), line);
     let export = Export::new(kind, visibility, location);
 
-    let name = ExportName::Named(Cow::Owned(ident.sym.to_string()));
+    let name = ExportName::Named(ident.sym.clone());
 
     (name, export)
 }
@@ -202,19 +203,19 @@ fn parse_import_decl(
                 let import_name = (named.imported.as_ref())
                     .unwrap_or(&named.local)
                     .sym
-                    .to_string();
+                    .clone();
 
-                if import_name == "default" {
-                    module_imports.push(Import::Default)
+                if &import_name == "default" {
+                    module_imports.push(ImportName::Default)
                 } else {
-                    module_imports.push(Import::Named(import_name));
+                    module_imports.push(ImportName::Named(import_name));
                 }
             }
             ImportSpecifier::Default(_) => {
-                module_imports.push(Import::Default);
+                module_imports.push(ImportName::Default);
             }
             ImportSpecifier::Namespace(_) => {
-                module_imports.push(Import::Wildcard);
+                module_imports.push(ImportName::Wildcard);
             }
         }
     }
@@ -222,11 +223,10 @@ fn parse_import_decl(
     Ok(())
 }
 
-fn parse_module(
-    root: &Path,
+pub fn parse_module_to_ast(
     file_path: &Path,
     module_kind: ModuleKind,
-) -> anyhow::Result<Module<'static>> {
+) -> anyhow::Result<(SourceMap, swc_ecma_ast::Module)> {
     use swc_ecma_parser::{lexer::Lexer, Parser, StringInput, Syntax, TsConfig};
 
     let tsconfig = TsConfig {
@@ -237,11 +237,6 @@ fn parse_module(
         dts: module_kind == ModuleKind::DTS,
         tsx: module_kind == ModuleKind::TSX,
     };
-
-    let normalized_path = normalize_module_path(&root, &file_path)?;
-    let current_folder = file_path
-        .parent()
-        .expect("A file path should always have a parent");
 
     let source_map = SourceMap::new(FilePathMapping::empty());
     let source_file = source_map.load_file(file_path)?;
@@ -254,22 +249,30 @@ fn parse_module(
         None,
     );
 
-    let file_path = Arc::new(file_path.to_path_buf());
-
     let mut parser = Parser::new_from(lexer);
 
-    // TODO put behind debug logging
-    // println!("Parsing {}", file_path.to_string_lossy());
-
-    let swc_module = parser
+    let module = parser
         .parse_module()
         .map_err(|err| anyhow!("Failed to parse module: {:?}", err))?;
+
+    Ok((source_map, module))
+}
+
+fn parse_module(root: &Path, file_path: &Path, module_kind: ModuleKind) -> anyhow::Result<Module> {
+    let (source_map, module_ast) = parse_module_to_ast(file_path, module_kind)?;
+
+    let normalized_path = normalize_module_path(&root, &file_path)?;
+    let current_folder = file_path
+        .parent()
+        .expect("A file path should always have a parent");
+
+    let file_path = Arc::new(file_path.to_path_buf());
 
     let mut module = Module::new(file_path, normalized_path, module_kind);
 
     let mut default_export: Option<(ExportKind, ModuleSourceAndLine)> = None;
 
-    for item in swc_module.body {
+    for item in module_ast.body {
         match item {
             ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) => {
                 get_decl_exports(&export_decl.decl, true, &mut module, &source_map);
@@ -322,7 +325,6 @@ fn parse_module(
             ModuleItem::ModuleDecl(ModuleDecl::Import(import_decl)) => {
                 parse_import_decl(root, current_folder, import_decl, &mut module)?;
             }
-
             _ => {}
         }
     }
