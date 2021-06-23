@@ -1,7 +1,10 @@
 // Scope analysis inspired by
 // https://github.com/nestdotland/analyzer/blob/932db812b8467e1ad19ad1a5d440d56a2e64dd08/analyzer_tree/scopes.rs
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+};
 
 use swc_atoms::JsWord;
 use swc_common::Span;
@@ -31,6 +34,12 @@ pub struct ScopeId(usize);
 impl ScopeId {
     pub fn root() -> Self {
         ScopeId(0)
+    }
+}
+
+impl Display for ScopeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -506,8 +515,10 @@ mod tests {
         module_visitor::{Scope, ScopeId},
         parsing::module_from_source,
     };
+
     use swc_atoms::JsWord;
     use swc_ecma_visit::Visit;
+    use itertools::Itertools;
 
     fn parse_and_visit(source: &'static str) -> ModuleVisitor {
         let (_, module) = module_from_source(
@@ -735,12 +746,53 @@ mod tests {
         assert!(inner_scope.references.contains(&JsWord::from("bar")));
     }
 
+    #[test]
+    pub fn usages_path_new() {
+        let source = r#"
+            const foo = { a: { b: { c: 10 } } }
+            const bar = { a: { b: { c: 10 } } }
+            {
+                const bar = foo.a.b.c
+                type Bar = typeof bar.a.b.c
+            }
+        "#;
+
+        let spec = TestSpec {
+            source,
+            exports: vec![],
+            scope: TestScope {
+                bindings: vec!["foo", "bar"],
+                inner: vec![TestScope {
+                    bindings: vec!["bar"],
+                    type_bindings: vec!["Bar"],
+                    references: vec!["foo", "bar"],
+                    ..TestScope::default()
+                }],
+                ..TestScope::default()
+            },
+        };
+
+        run_test(spec);
+    }
+
     struct TestScope {
         references: Vec<&'static str>,
         type_references: Vec<&'static str>,
-        inner: Vec<TestScope>,
         bindings: Vec<&'static str>,
         type_bindings: Vec<&'static str>,
+        inner: Vec<TestScope>,
+    }
+
+    impl Default for TestScope {
+        fn default() -> Self {
+            TestScope {
+                references: vec![],
+                type_references: vec![],
+                bindings: vec![],
+                type_bindings: vec![],
+                inner: vec![],
+            }
+        }
     }
 
     struct TestSpec {
@@ -781,11 +833,47 @@ mod tests {
             .map(|scope| (scope.id, scope))
             .collect();
 
-        let check_scope = |spec, test_scope, scope_id| {
-            let scope = scopes_by_id.get(&scope_id).unwrap();
-        };
+        let scopes_by_parent: HashMap<ScopeId, Vec<&Scope>> = visitor
+            .scopes
+            .iter()
+            .filter_map(|scope| scope.parent.map(|parent_id| (parent_id, scope)))
+            .into_group_map();
+
+        fn assert_vec_set_equal(kind_singular: &'static str, kind_plural: &'static str, expected: &[&'static str], was: &HashSet<JsWord>, scope_id: ScopeId) {
+            assert_eq!(
+                expected.len(),
+                was.len(),
+                "Expected scope {} to contain {} {}",
+                scope_id,
+                expected.len(),
+                kind_plural
+            );
+
+            for binding in expected {
+                let as_atom = JsWord::from(*binding);
+                assert!(
+                    was.contains(&as_atom),
+                    "Scope {} should contain {} {}",
+                    scope_id,
+                    kind_singular,
+                    binding
+                );
+            }
+        }
+
+        fn check_scope(test_scope: &TestScope, scope: &Scope, scopes_by_parent: &HashMap<ScopeId, Vec<&Scope>>) {
+            assert_vec_set_equal("binding", "bindings", &test_scope.bindings, &scope.bindings, scope.id);
+            assert_vec_set_equal("type binding", "type bindings", &test_scope.type_bindings, &scope.type_bindings, scope.id);
+            assert_vec_set_equal("reference", "references", &test_scope.references, &scope.references, scope.id);
+            assert_vec_set_equal("type reference", "type references", &test_scope.type_references, &scope.type_references, scope.id);
+
+            for (scope, test_scope) in scopes_by_parent.get(&scope.id).unwrap_or(&Vec::new()).iter().zip(test_scope.inner.iter()) {
+                check_scope(test_scope, scope, scopes_by_parent);
+            }
+        }
 
         // let root_scope = &visitor.scopes[0];
-        check_scope(&spec, &spec.scope, ScopeId::root());
+        let root_scope = scopes_by_id.get(&ScopeId::root()).unwrap();
+        check_scope(&spec.scope, root_scope, &scopes_by_parent);
     }
 }
