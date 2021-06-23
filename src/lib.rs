@@ -1,4 +1,5 @@
 pub mod analysis;
+pub mod ast_utils;
 pub mod config;
 pub mod dependency_graph;
 pub mod module_visitor;

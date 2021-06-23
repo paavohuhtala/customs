@@ -1,12 +1,13 @@
-use std::{collections::HashMap, ops::Deref, path::Path, sync::Arc};
+use std::{collections::HashMap, ops::Deref, path::Path, rc::Rc, sync::Arc};
 
 use anyhow::anyhow;
 use lazy_static::lazy_static;
 use rayon::prelude::*;
 use regex::Regex;
 
-use swc_common::{FilePathMapping, SourceMap, Span};
+use swc_common::{FileName, FilePathMapping, SourceFile, SourceMap, Span};
 use swc_ecma_ast::{Decl, DefaultDecl, Ident, ModuleDecl, ModuleItem, ObjectPatProp, Pat, Stmt};
+use swc_ecma_parser::StringInput;
 
 use crate::{
     config::Config,
@@ -223,11 +224,35 @@ fn parse_import_decl(
     Ok(())
 }
 
-pub fn parse_module_to_ast(
+pub fn module_from_file(
     file_path: &Path,
     module_kind: ModuleKind,
 ) -> anyhow::Result<(SourceMap, swc_ecma_ast::Module)> {
-    use swc_ecma_parser::{lexer::Lexer, Parser, StringInput, Syntax, TsConfig};
+    let source_map = SourceMap::new(FilePathMapping::empty());
+    let source_file = source_map.load_file(file_path)?;
+    let module = module_from_source_file(source_file, module_kind)?;
+
+    Ok((source_map, module))
+}
+
+pub fn module_from_source(
+    source: String,
+    module_kind: ModuleKind,
+) -> anyhow::Result<(SourceMap, swc_ecma_ast::Module)> {
+    let source_map = SourceMap::new(FilePathMapping::empty());
+    let source_file = source_map.new_source_file(FileName::Anon, source);
+    let module = module_from_source_file(source_file, module_kind)?;
+
+    Ok((source_map, module))
+}
+
+pub fn module_from_source_file(
+    source_file: Rc<SourceFile>,
+    module_kind: ModuleKind,
+) -> anyhow::Result<swc_ecma_ast::Module> {
+    use swc_ecma_parser::{lexer::Lexer, Parser, Syntax, TsConfig};
+
+    let input = StringInput::from(source_file.deref());
 
     let tsconfig = TsConfig {
         decorators: false,
@@ -237,10 +262,6 @@ pub fn parse_module_to_ast(
         dts: module_kind == ModuleKind::DTS,
         tsx: module_kind == ModuleKind::TSX,
     };
-
-    let source_map = SourceMap::new(FilePathMapping::empty());
-    let source_file = source_map.load_file(file_path)?;
-    let input = StringInput::from(source_file.deref());
 
     let lexer = Lexer::new(
         Syntax::Typescript(tsconfig),
@@ -255,11 +276,11 @@ pub fn parse_module_to_ast(
         .parse_module()
         .map_err(|err| anyhow!("Failed to parse module: {:?}", err))?;
 
-    Ok((source_map, module))
+    Ok(module)
 }
 
 fn parse_module(root: &Path, file_path: &Path, module_kind: ModuleKind) -> anyhow::Result<Module> {
-    let (source_map, module_ast) = parse_module_to_ast(file_path, module_kind)?;
+    let (source_map, module_ast) = module_from_file(file_path, module_kind)?;
 
     let normalized_path = normalize_module_path(&root, &file_path)?;
     let current_folder = file_path

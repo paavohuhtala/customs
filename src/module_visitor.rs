@@ -9,11 +9,14 @@ use swc_ecma_ast::{
     ArrayPat, BindingIdent, BlockStmt, ClassDecl, DefaultDecl, ExportDecl, ExportDefaultDecl,
     ExportSpecifier, Expr, Ident, ImportDefaultSpecifier, ImportNamedSpecifier, ImportSpecifier,
     ImportStarAsSpecifier, NamedExport, ObjectPatProp, TsInterfaceDecl, TsType, TsTypeAliasDecl,
-    TsTypeParam, TsTypeRef,
+    TsTypeParam, TsTypeQuery, TsTypeRef,
 };
-use swc_ecma_visit::{Node, Visit};
+use swc_ecma_visit::Node;
 
-use crate::dependency_graph::{ExportName, ImportName};
+use crate::{
+    ast_utils::walk_ts_qualified_name,
+    dependency_graph::{ExportName, ImportName},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeKind {
@@ -22,8 +25,14 @@ pub enum ScopeKind {
     Block,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
 pub struct ScopeId(usize);
+
+impl ScopeId {
+    pub fn root() -> Self {
+        ScopeId(0)
+    }
+}
 
 pub struct OwnedScope {
     pub id: ScopeId,
@@ -139,22 +148,30 @@ impl ModuleVisitor {
     }
 
     fn enter_type(&mut self) {
+        //assert!(!self.in_type);
         self.in_type = true;
     }
 
     fn exit_type(&mut self) {
+        //assert!(self.in_type);
         self.in_type = false;
     }
 
     fn enter_export(&mut self) {
+        assert!(self.export_state == ExportState::Private);
         self.export_state = ExportState::InExport;
     }
 
     fn enter_default_export(&mut self) {
+        assert!(self.export_state == ExportState::Private);
         self.export_state = ExportState::InDefaultExport;
     }
 
     fn exit_export(&mut self) {
+        assert!(
+            self.export_state == ExportState::InExport
+                || self.export_state == ExportState::InDefaultExport
+        );
         self.export_state = ExportState::Private;
     }
 
@@ -225,9 +242,7 @@ impl ModuleVisitor {
 impl swc_ecma_visit::Visit for ModuleVisitor {
     fn visit_export_decl(&mut self, export_decl: &ExportDecl, parent: &dyn Node) {
         self.enter_export();
-        println!("entered export :D");
         self.visit_decl(&export_decl.decl, parent);
-        println!("exited export :D");
         self.exit_export();
     }
 
@@ -317,6 +332,14 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         self.visit_class(&class_decl.class, class_decl);
     }
 
+    /*fn visit_var_decl(&mut self, var_decl: &VarDecl, _parent: &dyn Node) {
+        self.register_decl(&class_decl.ident, class_decl.ident.span);
+
+        self.add_binding(&class_decl.ident);
+        self.add_type_binding(&class_decl.ident);
+        self.visit_class(&class_decl.class, class_decl);
+    }*/
+
     fn visit_ts_interface_decl(&mut self, interface_decl: &TsInterfaceDecl, _parent: &dyn Node) {
         self.register_decl(&interface_decl.id, interface_decl.id.span);
         self.add_type_binding(&interface_decl.id);
@@ -376,6 +399,23 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         }
     }
 
+    fn visit_ts_type_query(&mut self, type_query: &TsTypeQuery, _parent: &dyn Node) {
+        match &type_query.expr_name {
+            swc_ecma_ast::TsTypeQueryExpr::TsEntityName(entity_name) => match entity_name {
+                swc_ecma_ast::TsEntityName::TsQualifiedName(qualified_name) => {
+                    let ident = walk_ts_qualified_name(&qualified_name);
+                    self.mark_used(ident);
+                }
+                swc_ecma_ast::TsEntityName::Ident(ident) => {
+                    self.mark_used(&ident);
+                }
+            },
+            swc_ecma_ast::TsTypeQueryExpr::Import(_import) => {
+                todo!("typeof on import items not implemented")
+            }
+        }
+    }
+
     fn visit_ts_type(&mut self, ts_type: &TsType, parent: &dyn Node) {
         self.enter_type();
         swc_ecma_visit::visit_ts_type(self, ts_type, parent);
@@ -389,6 +429,7 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
     }
 
     fn visit_binding_ident(&mut self, ident: &BindingIdent, _parent: &dyn Node) {
+        self.register_decl(&ident.id, ident.id.span);
         self.add_binding(&ident.id);
     }
 
@@ -429,9 +470,9 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         match expr {
             Expr::Ident(ident) => {
                 // TODO: this is not completely correct
-                if !self.in_type {
-                    self.mark_used(ident);
-                }
+                // if !self.in_type {
+                self.mark_used(ident);
+                //}
             }
             Expr::Member(member) => {
                 match &member.obj {
@@ -452,5 +493,299 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
                 swc_ecma_visit::visit_expr(self, otherwise, parent);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+
+    use super::ModuleVisitor;
+    use crate::{
+        dependency_graph::ExportName,
+        module_visitor::{Scope, ScopeId},
+        parsing::module_from_source,
+    };
+    use swc_atoms::JsWord;
+    use swc_ecma_visit::Visit;
+
+    fn parse_and_visit(source: &'static str) -> ModuleVisitor {
+        let (_, module) = module_from_source(
+            String::from(source),
+            crate::dependency_graph::ModuleKind::TS,
+        )
+        .unwrap();
+
+        let mut visitor = ModuleVisitor::new();
+        visitor.visit_module(&module, &module);
+        visitor
+    }
+
+    #[test]
+    pub fn parse_ts_type() {
+        let source = r#"type Foo = { bar: string }"#;
+        let visitor = parse_and_visit(source);
+
+        assert_eq!(1, visitor.scopes.len());
+        let root_scope = visitor.scopes.first().unwrap();
+
+        assert_eq!(1, root_scope.type_bindings.len());
+        assert!(root_scope.bindings.is_empty());
+
+        assert!(root_scope.type_bindings.contains(&JsWord::from("Foo")));
+    }
+
+    #[test]
+    pub fn parse_ts_interface() {
+        let source = r#"interface Foo { bar: string }"#;
+        let visitor = parse_and_visit(source);
+
+        assert_eq!(1, visitor.scopes.len());
+        let root_scope = visitor.scopes.first().unwrap();
+
+        assert_eq!(1, root_scope.type_bindings.len());
+        assert!(root_scope.bindings.is_empty());
+
+        assert!(root_scope.type_bindings.contains(&JsWord::from("Foo")));
+    }
+
+    #[test]
+    pub fn parse_type_and_value_of_same_name() {
+        let source = r#"
+            interface Foo { bar: number }
+            const Foo = 123
+        "#;
+        let visitor = parse_and_visit(source);
+
+        assert_eq!(1, visitor.scopes.len());
+        let root_scope = visitor.scopes.first().unwrap();
+
+        assert_eq!(1, root_scope.type_bindings.len());
+        assert_eq!(1, root_scope.bindings.len());
+
+        assert!(root_scope.type_bindings.contains(&JsWord::from("Foo")));
+
+        assert!(root_scope.bindings.contains(&JsWord::from("Foo")));
+    }
+
+    #[test]
+    pub fn scoping_block() {
+        let source = r#"
+            const foo = 123
+            {
+                type Bar = number
+                const foo = "456"
+            }
+        "#;
+        let visitor = parse_and_visit(source);
+
+        assert_eq!(2, visitor.scopes.len());
+        let root_scope = &visitor.scopes[0];
+        let inner_scope = &visitor.scopes[1];
+
+        assert_eq!(Some(root_scope.id), inner_scope.parent);
+
+        assert_eq!(1, root_scope.bindings.len());
+        assert!(root_scope.type_bindings.is_empty());
+
+        assert_eq!(1, inner_scope.bindings.len());
+        assert_eq!(1, inner_scope.type_bindings.len());
+
+        assert!(root_scope.bindings.contains(&JsWord::from("foo")));
+
+        assert!(inner_scope.bindings.contains(&JsWord::from("foo")));
+
+        assert!(inner_scope.type_bindings.contains(&JsWord::from("Bar")));
+    }
+
+    #[test]
+    pub fn scoping_function() {
+        let source = r#"
+            const outerConstant = "foo" 
+            function outerFunction()
+            {
+                function innerFunction() { }
+            }
+        "#;
+        let visitor = parse_and_visit(source);
+
+        assert_eq!(3, visitor.scopes.len());
+        let root_scope = &visitor.scopes[0];
+        let outer_function_scope = &visitor.scopes[1];
+        let inner_function_scope = &visitor.scopes[2];
+
+        assert_eq!(Some(root_scope.id), outer_function_scope.parent);
+        assert_eq!(Some(outer_function_scope.id), inner_function_scope.parent);
+
+        assert_eq!(2, root_scope.bindings.len());
+        assert!(root_scope.type_bindings.is_empty());
+
+        assert_eq!(1, outer_function_scope.bindings.len());
+        assert!(outer_function_scope.type_bindings.is_empty());
+
+        assert!(inner_function_scope.bindings.is_empty());
+        assert!(outer_function_scope.type_bindings.is_empty());
+
+        assert!(root_scope.bindings.contains(&JsWord::from("outerConstant")));
+
+        assert!(root_scope.bindings.contains(&JsWord::from("outerFunction")));
+
+        assert!(outer_function_scope
+            .bindings
+            .contains(&JsWord::from("innerFunction")));
+    }
+
+    #[test]
+    pub fn exports_smoke() {
+        let source = r#"
+            export const exportedConstant = {}
+            export function exportedFunction() { }
+            export type ExportedType = { }
+            export interface ExportedInterface { }
+        "#;
+        let visitor = parse_and_visit(source);
+
+        let export_names: HashSet<_> = visitor
+            .exports
+            .iter()
+            .map(|export| export.name.clone())
+            .collect();
+
+        assert_eq!(4, export_names.len());
+
+        for id in [
+            "exportedConstant",
+            "exportedFunction",
+            "ExportedType",
+            "ExportedInterface",
+        ] {
+            let id = ExportName::Named(JsWord::from(id));
+            export_names.contains(&id);
+        }
+    }
+
+    #[test]
+    pub fn exports_inner_scope() {
+        let source = r#"
+            export const exportedFunction = function() {
+                const notExported = 10
+                function norThis<T>() { }
+                const [a, b, c] = [1, 2, 3]
+            }
+        "#;
+
+        let visitor = parse_and_visit(source);
+        assert_eq!(1, visitor.exports.len());
+
+        assert_eq!(
+            &ExportName::Named(JsWord::from("exportedFunction")),
+            &visitor.exports[0].name
+        );
+    }
+
+    #[test]
+    pub fn usages_typeof() {
+        let source = r#"
+            const foo = { a: 10, b: 20 }
+            type Foo = typeof foo
+            type Bar = Foo
+        "#;
+
+        let visitor = parse_and_visit(source);
+        let root_scope = &visitor.scopes[0];
+
+        assert_eq!(
+            1,
+            root_scope.references.len(),
+            "Should have at exactly one value reference"
+        );
+
+        assert_eq!(
+            1,
+            root_scope.type_references.len(),
+            "Should have exactly one type reference"
+        );
+
+        assert!(root_scope.references.contains(&JsWord::from("foo")));
+        assert!(root_scope.type_references.contains(&JsWord::from("Foo")));
+    }
+
+    #[test]
+    pub fn usages_path() {
+        let source = r#"
+            const foo = { a: { b: { c: 10 } } }
+            const bar = { a: { b: { c: 10 } } }
+            {
+                const bar = foo.a.b.c
+                type Bar = typeof bar.a.b.c
+            }
+        "#;
+
+        let visitor = parse_and_visit(source);
+        let root_scope = &visitor.scopes[0];
+        let inner_scope = &visitor.scopes[1];
+
+        assert!(root_scope.references.is_empty());
+        assert!(root_scope.type_references.is_empty());
+
+        assert_eq!(2, inner_scope.references.len());
+        assert!(inner_scope.type_references.is_empty());
+
+        assert!(inner_scope.references.contains(&JsWord::from("foo")));
+        assert!(inner_scope.references.contains(&JsWord::from("bar")));
+    }
+
+    struct TestScope {
+        references: Vec<&'static str>,
+        type_references: Vec<&'static str>,
+        inner: Vec<TestScope>,
+        bindings: Vec<&'static str>,
+        type_bindings: Vec<&'static str>,
+    }
+
+    struct TestSpec {
+        source: &'static str,
+        exports: Vec<&'static str>,
+        scope: TestScope,
+    }
+
+    fn run_test(spec: TestSpec) {
+        let visitor = parse_and_visit(spec.source);
+
+        assert_eq!(
+            spec.exports.len(),
+            visitor.exports.len(),
+            "Expected export counts to match"
+        );
+
+        for export in &spec.exports {
+            let export_name = match *export {
+                "default" => ExportName::Default,
+                name => ExportName::Named(JsWord::from(name)),
+            };
+
+            assert!(
+                visitor
+                    .exports
+                    .iter()
+                    .find(|export| export.name == export_name)
+                    .is_some(),
+                "Should contain export {}",
+                export
+            );
+        }
+
+        let scopes_by_id: HashMap<_, _> = visitor
+            .scopes
+            .iter()
+            .map(|scope| (scope.id, scope))
+            .collect();
+
+        let check_scope = |spec, test_scope, scope_id| {
+            let scope = scopes_by_id.get(&scope_id).unwrap();
+        };
+
+        // let root_scope = &visitor.scopes[0];
+        check_scope(&spec, &spec.scope, ScopeId::root());
     }
 }

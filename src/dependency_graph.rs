@@ -24,7 +24,7 @@ impl Deref for NormalizedModulePath {
     }
 }
 
-#[derive(PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+#[derive(PartialEq, Eq, Hash, Debug, PartialOrd, Ord, Clone)]
 pub enum ExportName {
     Named(JsWord),
     Default,
