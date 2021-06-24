@@ -10,9 +10,9 @@ use swc_atoms::JsWord;
 use swc_common::Span;
 use swc_ecma_ast::{
     ArrayPat, BindingIdent, BlockStmt, ClassDecl, DefaultDecl, ExportDecl, ExportDefaultDecl,
-    ExportSpecifier, Expr, Ident, ImportDefaultSpecifier, ImportNamedSpecifier, ImportSpecifier,
-    ImportStarAsSpecifier, NamedExport, ObjectPatProp, TsInterfaceDecl, TsType, TsTypeAliasDecl,
-    TsTypeParam, TsTypeQuery, TsTypeRef,
+    ExportSpecifier, Expr, Function, Ident, ImportDefaultSpecifier, ImportNamedSpecifier,
+    ImportSpecifier, ImportStarAsSpecifier, NamedExport, ObjectPatProp, TsInterfaceDecl,
+    TsPropertySignature, TsType, TsTypeAliasDecl, TsTypeParam, TsTypeQuery, TsTypeRef,
 };
 use swc_ecma_visit::Node;
 
@@ -333,6 +333,28 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         self.visit_function(&fn_decl.function, fn_decl);
     }
 
+    fn visit_function(&mut self, function: &Function, _parent: &dyn Node) {
+        self.enter_scope(ScopeKind::Block);
+
+        self.visit_params(&function.params, function);
+        self.visit_decorators(&function.decorators, function);
+
+        if let Some(return_type) = &function.return_type {
+            self.visit_ts_type_ann(return_type, function);
+        }
+
+        if let Some(type_param_decl) = &function.type_params {
+            self.visit_ts_type_param_decl(type_param_decl, function)
+        }
+
+        // Do this explicitly instead of calling visit_block_stmt, because we don't want a separate block scope.
+        if let Some(body) = &function.body {
+            self.visit_stmts(&body.stmts, body);
+        }
+
+        self.exit_scope();
+    }
+
     fn visit_class_decl(&mut self, class_decl: &ClassDecl, _parent: &dyn Node) {
         self.register_decl(&class_decl.ident, class_decl.ident.span);
 
@@ -340,14 +362,6 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         self.add_type_binding(&class_decl.ident);
         self.visit_class(&class_decl.class, class_decl);
     }
-
-    /*fn visit_var_decl(&mut self, var_decl: &VarDecl, _parent: &dyn Node) {
-        self.register_decl(&class_decl.ident, class_decl.ident.span);
-
-        self.add_binding(&class_decl.ident);
-        self.add_type_binding(&class_decl.ident);
-        self.visit_class(&class_decl.class, class_decl);
-    }*/
 
     fn visit_ts_interface_decl(&mut self, interface_decl: &TsInterfaceDecl, _parent: &dyn Node) {
         self.register_decl(&interface_decl.id, interface_decl.id.span);
@@ -367,6 +381,22 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         self.enter_type();
         self.visit_ts_interface_body(&interface_decl.body, interface_decl);
         self.exit_type();
+    }
+
+    fn visit_ts_property_signature(
+        &mut self,
+        property_signature: &TsPropertySignature,
+        _parent: &dyn Node,
+    ) {
+        if let Some(type_param_decl) = &property_signature.type_params {
+            self.visit_ts_type_param_decl(type_param_decl, property_signature);
+        }
+
+        if let Some(type_ann) = &property_signature.type_ann {
+            self.visit_ts_type_ann(type_ann, property_signature);
+        }
+
+        // TODO: Should we ever visit init or params?
     }
 
     fn visit_ts_type_alias_decl(&mut self, type_alias_decl: &TsTypeAliasDecl, _parent: &dyn Node) {
@@ -516,9 +546,9 @@ mod tests {
         parsing::module_from_source,
     };
 
+    use itertools::Itertools;
     use swc_atoms::JsWord;
     use swc_ecma_visit::Visit;
-    use itertools::Itertools;
 
     fn parse_and_visit(source: &'static str) -> ModuleVisitor {
         let (_, module) = module_from_source(
@@ -535,29 +565,33 @@ mod tests {
     #[test]
     pub fn parse_ts_type() {
         let source = r#"type Foo = { bar: string }"#;
-        let visitor = parse_and_visit(source);
 
-        assert_eq!(1, visitor.scopes.len());
-        let root_scope = visitor.scopes.first().unwrap();
+        let spec = TestSpec {
+            source,
+            exports: vec![],
+            scope: TestScope {
+                type_bindings: vec!["Foo"],
+                ..Default::default()
+            },
+        };
 
-        assert_eq!(1, root_scope.type_bindings.len());
-        assert!(root_scope.bindings.is_empty());
-
-        assert!(root_scope.type_bindings.contains(&JsWord::from("Foo")));
+        run_test(spec);
     }
 
     #[test]
     pub fn parse_ts_interface() {
         let source = r#"interface Foo { bar: string }"#;
-        let visitor = parse_and_visit(source);
 
-        assert_eq!(1, visitor.scopes.len());
-        let root_scope = visitor.scopes.first().unwrap();
+        let spec = TestSpec {
+            source,
+            exports: vec![],
+            scope: TestScope {
+                type_bindings: vec!["Foo"],
+                ..Default::default()
+            },
+        };
 
-        assert_eq!(1, root_scope.type_bindings.len());
-        assert!(root_scope.bindings.is_empty());
-
-        assert!(root_scope.type_bindings.contains(&JsWord::from("Foo")));
+        run_test(spec);
     }
 
     #[test]
@@ -566,17 +600,18 @@ mod tests {
             interface Foo { bar: number }
             const Foo = 123
         "#;
-        let visitor = parse_and_visit(source);
 
-        assert_eq!(1, visitor.scopes.len());
-        let root_scope = visitor.scopes.first().unwrap();
+        let spec = TestSpec {
+            source,
+            exports: vec![],
+            scope: TestScope {
+                bindings: vec!["Foo"],
+                type_bindings: vec!["Foo"],
+                ..Default::default()
+            },
+        };
 
-        assert_eq!(1, root_scope.type_bindings.len());
-        assert_eq!(1, root_scope.bindings.len());
-
-        assert!(root_scope.type_bindings.contains(&JsWord::from("Foo")));
-
-        assert!(root_scope.bindings.contains(&JsWord::from("Foo")));
+        run_test(spec);
     }
 
     #[test]
@@ -588,25 +623,22 @@ mod tests {
                 const foo = "456"
             }
         "#;
-        let visitor = parse_and_visit(source);
 
-        assert_eq!(2, visitor.scopes.len());
-        let root_scope = &visitor.scopes[0];
-        let inner_scope = &visitor.scopes[1];
+        let spec = TestSpec {
+            source,
+            exports: vec![],
+            scope: TestScope {
+                bindings: vec!["foo"],
+                inner: vec![TestScope {
+                    bindings: vec!["foo"],
+                    type_bindings: vec!["Bar"],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        };
 
-        assert_eq!(Some(root_scope.id), inner_scope.parent);
-
-        assert_eq!(1, root_scope.bindings.len());
-        assert!(root_scope.type_bindings.is_empty());
-
-        assert_eq!(1, inner_scope.bindings.len());
-        assert_eq!(1, inner_scope.type_bindings.len());
-
-        assert!(root_scope.bindings.contains(&JsWord::from("foo")));
-
-        assert!(inner_scope.bindings.contains(&JsWord::from("foo")));
-
-        assert!(inner_scope.type_bindings.contains(&JsWord::from("Bar")));
+        run_test(spec);
     }
 
     #[test]
@@ -618,32 +650,22 @@ mod tests {
                 function innerFunction() { }
             }
         "#;
-        let visitor = parse_and_visit(source);
 
-        assert_eq!(3, visitor.scopes.len());
-        let root_scope = &visitor.scopes[0];
-        let outer_function_scope = &visitor.scopes[1];
-        let inner_function_scope = &visitor.scopes[2];
+        let spec = TestSpec {
+            source,
+            exports: vec![],
+            scope: TestScope {
+                bindings: vec!["outerConstant", "outerFunction"],
+                inner: vec![TestScope {
+                    bindings: vec!["innerFunction"],
+                    inner: vec![TestScope::default()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        };
 
-        assert_eq!(Some(root_scope.id), outer_function_scope.parent);
-        assert_eq!(Some(outer_function_scope.id), inner_function_scope.parent);
-
-        assert_eq!(2, root_scope.bindings.len());
-        assert!(root_scope.type_bindings.is_empty());
-
-        assert_eq!(1, outer_function_scope.bindings.len());
-        assert!(outer_function_scope.type_bindings.is_empty());
-
-        assert!(inner_function_scope.bindings.is_empty());
-        assert!(outer_function_scope.type_bindings.is_empty());
-
-        assert!(root_scope.bindings.contains(&JsWord::from("outerConstant")));
-
-        assert!(root_scope.bindings.contains(&JsWord::from("outerFunction")));
-
-        assert!(outer_function_scope
-            .bindings
-            .contains(&JsWord::from("innerFunction")));
+        run_test(spec);
     }
 
     #[test]
@@ -654,25 +676,24 @@ mod tests {
             export type ExportedType = { }
             export interface ExportedInterface { }
         "#;
-        let visitor = parse_and_visit(source);
 
-        let export_names: HashSet<_> = visitor
-            .exports
-            .iter()
-            .map(|export| export.name.clone())
-            .collect();
+        let spec = TestSpec {
+            source,
+            exports: vec![
+                "exportedConstant",
+                "exportedFunction",
+                "ExportedType",
+                "ExportedInterface",
+            ],
+            scope: TestScope {
+                bindings: vec!["exportedConstant", "exportedFunction"],
+                type_bindings: vec!["ExportedType", "ExportedInterface"],
+                inner: vec![TestScope::default()],
+                ..Default::default()
+            },
+        };
 
-        assert_eq!(4, export_names.len());
-
-        for id in [
-            "exportedConstant",
-            "exportedFunction",
-            "ExportedType",
-            "ExportedInterface",
-        ] {
-            let id = ExportName::Named(JsWord::from(id));
-            export_names.contains(&id);
-        }
+        run_test(spec);
     }
 
     #[test]
@@ -685,13 +706,24 @@ mod tests {
             }
         "#;
 
-        let visitor = parse_and_visit(source);
-        assert_eq!(1, visitor.exports.len());
+        let spec = TestSpec {
+            source,
+            exports: vec!["exportedFunction"],
+            scope: TestScope {
+                bindings: vec!["exportedFunction"],
+                inner: vec![TestScope {
+                    bindings: vec!["notExported", "norThis", "a", "b", "c"],
+                    inner: vec![TestScope {
+                        type_bindings: vec!["T"],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        };
 
-        assert_eq!(
-            &ExportName::Named(JsWord::from("exportedFunction")),
-            &visitor.exports[0].name
-        );
+        run_test(spec);
     }
 
     #[test]
@@ -702,52 +734,23 @@ mod tests {
             type Bar = Foo
         "#;
 
-        let visitor = parse_and_visit(source);
-        let root_scope = &visitor.scopes[0];
+        let spec = TestSpec {
+            source,
+            exports: vec![],
+            scope: TestScope {
+                bindings: vec!["foo"],
+                type_bindings: vec!["Foo", "Bar"],
+                references: vec!["foo"],
+                type_references: vec!["Foo"],
+                ..Default::default()
+            },
+        };
 
-        assert_eq!(
-            1,
-            root_scope.references.len(),
-            "Should have at exactly one value reference"
-        );
-
-        assert_eq!(
-            1,
-            root_scope.type_references.len(),
-            "Should have exactly one type reference"
-        );
-
-        assert!(root_scope.references.contains(&JsWord::from("foo")));
-        assert!(root_scope.type_references.contains(&JsWord::from("Foo")));
+        run_test(spec);
     }
 
     #[test]
     pub fn usages_path() {
-        let source = r#"
-            const foo = { a: { b: { c: 10 } } }
-            const bar = { a: { b: { c: 10 } } }
-            {
-                const bar = foo.a.b.c
-                type Bar = typeof bar.a.b.c
-            }
-        "#;
-
-        let visitor = parse_and_visit(source);
-        let root_scope = &visitor.scopes[0];
-        let inner_scope = &visitor.scopes[1];
-
-        assert!(root_scope.references.is_empty());
-        assert!(root_scope.type_references.is_empty());
-
-        assert_eq!(2, inner_scope.references.len());
-        assert!(inner_scope.type_references.is_empty());
-
-        assert!(inner_scope.references.contains(&JsWord::from("foo")));
-        assert!(inner_scope.references.contains(&JsWord::from("bar")));
-    }
-
-    #[test]
-    pub fn usages_path_new() {
         let source = r#"
             const foo = { a: { b: { c: 10 } } }
             const bar = { a: { b: { c: 10 } } }
@@ -803,6 +806,7 @@ mod tests {
 
     fn run_test(spec: TestSpec) {
         let visitor = parse_and_visit(spec.source);
+        println!("{:?}", visitor);
 
         assert_eq!(
             spec.exports.len(),
@@ -839,7 +843,13 @@ mod tests {
             .filter_map(|scope| scope.parent.map(|parent_id| (parent_id, scope)))
             .into_group_map();
 
-        fn assert_vec_set_equal(kind_singular: &'static str, kind_plural: &'static str, expected: &[&'static str], was: &HashSet<JsWord>, scope_id: ScopeId) {
+        fn assert_vec_set_equal(
+            kind_singular: &'static str,
+            kind_plural: &'static str,
+            expected: &[&'static str],
+            was: &HashSet<JsWord>,
+            scope_id: ScopeId,
+        ) {
             assert_eq!(
                 expected.len(),
                 was.len(),
@@ -861,18 +871,56 @@ mod tests {
             }
         }
 
-        fn check_scope(test_scope: &TestScope, scope: &Scope, scopes_by_parent: &HashMap<ScopeId, Vec<&Scope>>) {
-            assert_vec_set_equal("binding", "bindings", &test_scope.bindings, &scope.bindings, scope.id);
-            assert_vec_set_equal("type binding", "type bindings", &test_scope.type_bindings, &scope.type_bindings, scope.id);
-            assert_vec_set_equal("reference", "references", &test_scope.references, &scope.references, scope.id);
-            assert_vec_set_equal("type reference", "type references", &test_scope.type_references, &scope.type_references, scope.id);
+        fn check_scope(
+            test_scope: &TestScope,
+            scope: &Scope,
+            scopes_by_parent: &HashMap<ScopeId, Vec<&Scope>>,
+        ) {
+            assert_vec_set_equal(
+                "binding",
+                "bindings",
+                &test_scope.bindings,
+                &scope.bindings,
+                scope.id,
+            );
+            assert_vec_set_equal(
+                "type binding",
+                "type bindings",
+                &test_scope.type_bindings,
+                &scope.type_bindings,
+                scope.id,
+            );
+            assert_vec_set_equal(
+                "reference",
+                "references",
+                &test_scope.references,
+                &scope.references,
+                scope.id,
+            );
+            assert_vec_set_equal(
+                "type reference",
+                "type references",
+                &test_scope.type_references,
+                &scope.type_references,
+                scope.id,
+            );
 
-            for (scope, test_scope) in scopes_by_parent.get(&scope.id).unwrap_or(&Vec::new()).iter().zip(test_scope.inner.iter()) {
+            let empty_vec = Vec::new();
+            let child_scopes = scopes_by_parent.get(&scope.id).unwrap_or(&empty_vec);
+
+            assert_eq!(
+                test_scope.inner.len(),
+                child_scopes.len(),
+                "Expected scope {} to have {} child scopes",
+                scope.id,
+                test_scope.inner.len()
+            );
+
+            for (scope, test_scope) in child_scopes.iter().zip(test_scope.inner.iter()) {
                 check_scope(test_scope, scope, scopes_by_parent);
             }
         }
 
-        // let root_scope = &visitor.scopes[0];
         let root_scope = scopes_by_id.get(&ScopeId::root()).unwrap();
         check_scope(&spec.scope, root_scope, &scopes_by_parent);
     }
