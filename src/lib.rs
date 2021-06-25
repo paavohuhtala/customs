@@ -6,3 +6,6 @@ pub mod module_visitor;
 pub mod package_json;
 pub mod parsing;
 pub mod reporting;
+
+#[cfg(test)]
+mod tests;
