@@ -9,10 +9,11 @@ use std::{
 use swc_atoms::JsWord;
 use swc_common::Span;
 use swc_ecma_ast::{
-    ArrayPat, BindingIdent, BlockStmt, ClassDecl, DefaultDecl, ExportDecl, ExportDefaultDecl,
-    ExportSpecifier, Expr, Function, Ident, ImportDefaultSpecifier, ImportNamedSpecifier,
-    ImportSpecifier, ImportStarAsSpecifier, NamedExport, ObjectPatProp, TsInterfaceDecl,
-    TsPropertySignature, TsType, TsTypeAliasDecl, TsTypeParam, TsTypeQuery, TsTypeRef,
+    ArrayPat, BindingIdent, BlockStmt, ClassDecl, ClassExpr, DefaultDecl, ExportDecl,
+    ExportDefaultDecl, ExportDefaultExpr, ExportSpecifier, Expr, FnExpr, Function, Ident,
+    ImportDefaultSpecifier, ImportNamedSpecifier, ImportSpecifier, ImportStarAsSpecifier,
+    NamedExport, ObjectPatProp, TsInterfaceDecl, TsPropertySignature, TsType, TsTypeAliasDecl,
+    TsTypeParam, TsTypeQuery, TsTypeRef,
 };
 use swc_ecma_visit::Node;
 
@@ -208,9 +209,13 @@ impl ModuleVisitor {
         scope.ambiguous_bindings.insert(ident.sym.clone());
     }
 
-    fn mark_used(&mut self, ident: &Ident) {
+    fn mark_used_atom(&mut self, atom: &JsWord) {
         let scope = self.current_scope();
-        scope.references.insert(ident.sym.clone());
+        scope.references.insert(atom.clone());
+    }
+
+    fn mark_used(&mut self, ident: &Ident) {
+        self.mark_used_atom(&ident.sym);
     }
 
     fn mark_type_used(&mut self, ident: &Ident) {
@@ -218,9 +223,13 @@ impl ModuleVisitor {
         scope.type_references.insert(ident.sym.clone());
     }
 
-    fn mark_ambiguous_used(&mut self, ident: &Ident) {
+    fn mark_ambiguous_used_atom(&mut self, atom: &JsWord) {
         let scope = self.current_scope();
-        scope.ambiguous_references.insert(ident.sym.clone());
+        scope.ambiguous_references.insert(atom.clone());
+    }
+
+    fn mark_ambiguous_used(&mut self, ident: &Ident) {
+        self.mark_ambiguous_used_atom(&ident.sym);
     }
 
     fn in_root_scope(&self) -> bool {
@@ -255,20 +264,62 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         self.exit_export();
     }
 
-    fn visit_export_default_decl(&mut self, default_decl: &ExportDefaultDecl, _parent: &dyn Node) {
-        match &default_decl.decl {
-            DefaultDecl::Class(_) | DefaultDecl::Fn(_) | DefaultDecl::TsInterfaceDecl(_) => {
-                self.exports.push(ModuleExport {
-                    name: ExportName::Default,
-                    span: default_decl.span,
-                    local_name: None,
-                })
+    fn visit_export_default_decl(&mut self, default_decl: &ExportDefaultDecl, parent: &dyn Node) {
+        let local_ident = match &default_decl.decl {
+            DefaultDecl::Class(ClassExpr {
+                ident: Some(ident), ..
+            })
+            | DefaultDecl::Fn(FnExpr {
+                ident: Some(ident), ..
+            })
+            | DefaultDecl::TsInterfaceDecl(TsInterfaceDecl { id: ident, .. }) => Some(ident),
+            _ => None,
+        };
+
+        self.exports.push(ModuleExport {
+            name: ExportName::Default,
+            span: default_decl.span,
+            local_name: local_ident.map(|ident| ident.sym.clone()),
+        });
+
+        if let Some(local_ident) = local_ident {
+            match default_decl.decl {
+                DefaultDecl::Fn(_) => {
+                    self.add_binding(local_ident);
+                }
+                DefaultDecl::TsInterfaceDecl(_) => {
+                    self.add_type_binding(local_ident);
+                }
+                DefaultDecl::Class(_) => {
+                    self.add_binding(local_ident);
+                    self.add_type_binding(local_ident);
+                }
             }
+        }
+
+        swc_ecma_visit::visit_export_default_decl(self, default_decl, parent);
+    }
+
+    fn visit_export_default_expr(
+        &mut self,
+        export_default_expr: &ExportDefaultExpr,
+        _parent: &dyn Node,
+    ) {
+        self.exports.push(ModuleExport {
+            local_name: None,
+            name: ExportName::Default,
+            span: export_default_expr.span,
+        });
+
+        match &*export_default_expr.expr {
+            Expr::Ident(ident) => self.mark_ambiguous_used(&ident),
+            _ => self.visit_expr(&export_default_expr.expr, export_default_expr),
         }
     }
 
     fn visit_named_export(&mut self, named_export: &NamedExport, _parent: &dyn Node) {
-        let (mut exports, mut imports) = named_export
+        // I don't like this code. We are building improt
+        let (mut exports, mut imports): (Vec<ModuleExport>, Vec<ModuleImport>) = named_export
             .specifiers
             .iter()
             .filter_map(|specifier| match specifier {
@@ -311,6 +362,15 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
             imports_for_module.append(&mut imports);
         }
 
+        // If this is not a re-export, mark referenced local identifiers as used
+        if named_export.src.is_none() {
+            for export in &exports {
+                if let Some(local_name) = &export.local_name {
+                    self.mark_ambiguous_used_atom(local_name);
+                }
+            }
+        }
+
         self.exports.append(&mut exports);
     }
 
@@ -329,11 +389,11 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
 
         self.add_binding(&fn_decl.ident);
 
-        // function contains a block statement -> no need to explicitly enter scope
         self.visit_function(&fn_decl.function, fn_decl);
     }
 
     fn visit_function(&mut self, function: &Function, _parent: &dyn Node) {
+        // We create a scope here, because type parameters and arguments are part of the same scope as the body.
         self.enter_scope(ScopeKind::Block);
 
         self.visit_params(&function.params, function);
@@ -379,7 +439,14 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         }
 
         self.enter_type();
+        self.enter_scope(ScopeKind::Type);
+
+        if let Some(type_params) = &interface_decl.type_params {
+            self.visit_ts_type_param_decl(type_params, interface_decl);
+        }
+
         self.visit_ts_interface_body(&interface_decl.body, interface_decl);
+        self.exit_scope();
         self.exit_type();
     }
 
@@ -508,10 +575,8 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
     fn visit_expr(&mut self, expr: &Expr, parent: &dyn Node) {
         match expr {
             Expr::Ident(ident) => {
-                // TODO: this is not completely correct
-                // if !self.in_type {
+                // TODO: this is not completely correct?
                 self.mark_used(ident);
-                //}
             }
             Expr::Member(member) => {
                 match &member.obj {
@@ -587,6 +652,8 @@ mod tests {
             exports: vec![],
             scope: TestScope {
                 type_bindings: vec!["Foo"],
+                inner: vec![TestScope::default()],
+
                 ..Default::default()
             },
         };
@@ -607,6 +674,7 @@ mod tests {
             scope: TestScope {
                 bindings: vec!["Foo"],
                 type_bindings: vec!["Foo"],
+                inner: vec![TestScope::default()],
                 ..Default::default()
             },
         };
@@ -644,7 +712,6 @@ mod tests {
     #[test]
     pub fn scoping_function() {
         let source = r#"
-            const outerConstant = "foo" 
             function outerFunction()
             {
                 function innerFunction() { }
@@ -655,10 +722,103 @@ mod tests {
             source,
             exports: vec![],
             scope: TestScope {
-                bindings: vec!["outerConstant", "outerFunction"],
+                bindings: vec!["outerFunction"],
                 inner: vec![TestScope {
                     bindings: vec!["innerFunction"],
                     inner: vec![TestScope::default()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        };
+
+        run_test(spec);
+    }
+
+    #[test]
+    pub fn scoping_function_generics() {
+        let source = r#"
+            function f<T>() { }
+        "#;
+
+        let spec = TestSpec {
+            source,
+            exports: vec![],
+            scope: TestScope {
+                bindings: vec!["f"],
+                inner: vec![TestScope {
+                    type_bindings: vec!["T"],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        };
+
+        run_test(spec);
+    }
+
+    #[test]
+    pub fn scoping_function_initial() {
+        let source = r#"
+            function f(a: string, b: string = a) { }
+        "#;
+
+        let spec = TestSpec {
+            source,
+            exports: vec![],
+            scope: TestScope {
+                bindings: vec!["f"],
+                inner: vec![TestScope {
+                    bindings: vec!["a", "b"],
+                    references: vec!["a"],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        };
+
+        run_test(spec);
+    }
+
+    #[test]
+    pub fn scoping_function_self_reference() {
+        let source = r#"
+            function f<T>(a: T, b: T = a): T { return f(b) }
+        "#;
+
+        let spec = TestSpec {
+            source,
+            exports: vec![],
+            scope: TestScope {
+                bindings: vec!["f"],
+                inner: vec![TestScope {
+                    type_bindings: vec!["T"],
+                    bindings: vec!["a", "b"],
+                    type_references: vec!["T"],
+                    references: vec!["a", "b", "f"],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        };
+
+        run_test(spec);
+    }
+
+    #[test]
+    pub fn scoping_interface_type_parameters() {
+        let source = r#"
+            interface Foo<T> { x: T }
+        "#;
+
+        let spec = TestSpec {
+            source,
+            exports: vec![],
+            scope: TestScope {
+                type_bindings: vec!["Foo"],
+                inner: vec![TestScope {
+                    type_bindings: vec!["T"],
+                    type_references: vec!["T"],
                     ..Default::default()
                 }],
                 ..Default::default()
@@ -688,7 +848,7 @@ mod tests {
             scope: TestScope {
                 bindings: vec!["exportedConstant", "exportedFunction"],
                 type_bindings: vec!["ExportedType", "ExportedInterface"],
-                inner: vec![TestScope::default()],
+                inner: vec![TestScope::default(), TestScope::default()],
                 ..Default::default()
             },
         };
@@ -719,6 +879,160 @@ mod tests {
                     }],
                     ..Default::default()
                 }],
+                ..Default::default()
+            },
+        };
+
+        run_test(spec);
+    }
+
+    #[test]
+    pub fn exports_export_statement() {
+        let source = r#"
+            const a = 10
+            type Foo = number
+            export { a, Foo }
+        "#;
+
+        let spec = TestSpec {
+            source,
+            exports: vec!["a", "Foo"],
+            scope: TestScope {
+                bindings: vec!["a"],
+                type_bindings: vec!["Foo"],
+                ambiguous_references: vec!["a", "Foo"],
+                ..Default::default()
+            },
+        };
+
+        run_test(spec);
+    }
+
+    #[test]
+    pub fn exports_re_export() {
+        let source = r#"
+            export { a, Foo } from "./a"
+        "#;
+
+        let spec = TestSpec {
+            source,
+            exports: vec!["a", "Foo"],
+            scope: TestScope::default(),
+        };
+
+        run_test(spec);
+    }
+
+    #[test]
+    pub fn exports_rename() {
+        let source = r#"
+            const a = "foo"
+            export { a as b }
+        "#;
+
+        let spec = TestSpec {
+            source,
+            exports: vec!["b"],
+            scope: TestScope {
+                bindings: vec!["a"],
+                ambiguous_references: vec!["a"],
+                ..Default::default()
+            },
+        };
+
+        run_test(spec);
+    }
+
+    #[test]
+    pub fn exports_default_function() {
+        let source = r#"
+            export default function foo() { }
+        "#;
+
+        let spec = TestSpec {
+            source,
+            exports: vec!["default"],
+            scope: TestScope {
+                bindings: vec!["foo"],
+                inner: vec![TestScope::default()],
+                ..Default::default()
+            },
+        };
+
+        run_test(spec);
+    }
+
+    #[test]
+    pub fn exports_default_unnamed_function() {
+        let source = r#"
+            export default function() { }
+        "#;
+
+        let spec = TestSpec {
+            source,
+            exports: vec!["default"],
+            scope: TestScope {
+                inner: vec![TestScope::default()],
+                ..Default::default()
+            },
+        };
+
+        run_test(spec);
+    }
+
+    #[test]
+    pub fn exports_default_interface() {
+        let source = r#"
+            export default interface Foo { a: string, b: number }
+        "#;
+
+        let spec = TestSpec {
+            source,
+            exports: vec!["default"],
+            scope: TestScope {
+                type_bindings: vec!["Foo"],
+                inner: vec![TestScope::default()],
+                ..Default::default()
+            },
+        };
+
+        run_test(spec);
+    }
+
+    #[test]
+    pub fn exports_default_statement_const() {
+        let source = r#"
+            const foo = "bar"
+            export default foo
+        "#;
+
+        let spec = TestSpec {
+            source,
+            exports: vec!["default"],
+            scope: TestScope {
+                bindings: vec!["foo"],
+                ambiguous_references: vec!["foo"],
+                ..Default::default()
+            },
+        };
+
+        run_test(spec);
+    }
+
+    #[test]
+    pub fn exports_default_statement_interface() {
+        let source = r#"
+            interface Foo { x: number }
+            export default Foo
+        "#;
+
+        let spec = TestSpec {
+            source,
+            exports: vec!["default"],
+            scope: TestScope {
+                type_bindings: vec!["Foo"],
+                ambiguous_references: vec!["Foo"],
+                inner: vec![TestScope::default()],
                 ..Default::default()
             },
         };
@@ -781,6 +1095,7 @@ mod tests {
     struct TestScope {
         references: Vec<&'static str>,
         type_references: Vec<&'static str>,
+        ambiguous_references: Vec<&'static str>,
         bindings: Vec<&'static str>,
         type_bindings: Vec<&'static str>,
         inner: Vec<TestScope>,
@@ -791,6 +1106,7 @@ mod tests {
             TestScope {
                 references: vec![],
                 type_references: vec![],
+                ambiguous_references: vec![],
                 bindings: vec![],
                 type_bindings: vec![],
                 inner: vec![],
@@ -806,7 +1122,7 @@ mod tests {
 
     fn run_test(spec: TestSpec) {
         let visitor = parse_and_visit(spec.source);
-        println!("{:?}", visitor);
+        println!("{:#?}", visitor);
 
         assert_eq!(
             spec.exports.len(),
@@ -902,6 +1218,13 @@ mod tests {
                 "type references",
                 &test_scope.type_references,
                 &scope.type_references,
+                scope.id,
+            );
+            assert_vec_set_equal(
+                "ambiguous reference",
+                "ambiguous references",
+                &test_scope.ambiguous_references,
+                &scope.ambiguous_references,
                 scope.id,
             );
 
