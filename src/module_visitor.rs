@@ -12,8 +12,9 @@ use swc_ecma_ast::{
     ArrayPat, BindingIdent, BlockStmt, ClassDecl, ClassExpr, DefaultDecl, ExportDecl,
     ExportDefaultDecl, ExportDefaultExpr, ExportSpecifier, Expr, FnExpr, Function, Ident,
     ImportDefaultSpecifier, ImportNamedSpecifier, ImportSpecifier, ImportStarAsSpecifier,
-    NamedExport, ObjectPatProp, TsEntityName, TsExprWithTypeArgs, TsInterfaceDecl,
-    TsPropertySignature, TsType, TsTypeAliasDecl, TsTypeParam, TsTypeQuery, TsTypeRef,
+    NamedExport, ObjectPatProp, TsConditionalType, TsEntityName, TsExprWithTypeArgs,
+    TsInterfaceDecl, TsMappedType, TsPropertySignature, TsType, TsTypeAliasDecl, TsTypeParam,
+    TsTypeQuery, TsTypeRef,
 };
 use swc_ecma_visit::Node;
 
@@ -438,6 +439,33 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         self.exit_type();
     }
 
+    fn visit_ts_mapped_type(&mut self, mapped_type: &TsMappedType, parent: &dyn Node) {
+        self.enter_scope(ScopeKind::Type);
+        swc_ecma_visit::visit_ts_mapped_type(self, mapped_type, parent);
+        self.exit_scope();
+    }
+
+    fn visit_ts_conditional_type(
+        &mut self,
+        conditional_type: &TsConditionalType,
+        _parent: &dyn Node,
+    ) {
+        self.enter_scope(ScopeKind::Type);
+
+        self.visit_ts_type(&conditional_type.check_type, conditional_type);
+        self.visit_ts_type(&conditional_type.extends_type, conditional_type);
+
+        self.enter_scope(ScopeKind::Type);
+        self.visit_ts_type(&conditional_type.true_type, conditional_type);
+        self.exit_scope();
+
+        self.enter_scope(ScopeKind::Type);
+        self.visit_ts_type(&conditional_type.false_type, conditional_type);
+        self.exit_scope();
+
+        self.exit_scope();
+    }
+
     fn visit_ts_expr_with_type_args(&mut self, ts_expr: &TsExprWithTypeArgs, _parent: &dyn Node) {
         match &ts_expr.expr {
             TsEntityName::TsQualifiedName(_) => {
@@ -536,7 +564,6 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
                 self.visit_pat(&kv.value, kv);
             }
             ObjectPatProp::Assign(assign) => {
-                // self.add_binding(&assign.key);
                 if let Some(expr) = &assign.value {
                     self.visit_expr(expr, assign);
                 }
@@ -550,7 +577,7 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
     fn visit_expr(&mut self, expr: &Expr, parent: &dyn Node) {
         match expr {
             Expr::Ident(ident) => {
-                // TODO: this is not completely correct?
+                // TODO: this is not always correct?
                 self.mark_used(ident);
             }
             Expr::Member(member) => {

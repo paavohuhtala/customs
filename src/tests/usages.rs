@@ -259,7 +259,7 @@ pub fn function_initial() {
 #[test]
 pub fn function_self_reference() {
     let source = r#"
-        function f<T>(a: T, b: T = a): T { return f(b) }
+        function f() { return f() }
     "#;
 
     let spec = TestSpec {
@@ -268,10 +268,151 @@ pub fn function_self_reference() {
         scope: TestScope {
             bindings: vec!["f"],
             inner: vec![TestScope {
-                type_bindings: vec!["T"],
-                bindings: vec!["a", "b"],
-                type_references: vec!["T"],
-                references: vec!["a", "b", "f"],
+                references: vec!["f"],
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
+
+#[test]
+pub fn mapped_type() {
+    let source = r#"
+        type Key = "a" | "b"
+        type Foo = {
+            [k in Key]: number;
+        }
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec![],
+        scope: TestScope {
+            type_bindings: vec!["Key", "Foo"],
+            inner: vec![
+                TestScope::default(),
+                TestScope {
+                    inner: vec![TestScope {
+                        type_bindings: vec!["k"],
+                        type_references: vec!["Key"],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
+
+#[test]
+pub fn union_type() {
+    let source = r#"
+        type Foo = "foo"
+        type Bar = "bar"
+        type FooOrBar = Foo | Bar
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec![],
+        scope: TestScope {
+            type_bindings: vec!["Foo", "Bar", "FooOrBar"],
+            inner: vec![
+                TestScope::default(),
+                TestScope::default(),
+                TestScope {
+                    type_references: vec!["Foo", "Bar"],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
+
+#[test]
+pub fn intersection_type() {
+    let source = r#"
+        type Foo = { a: string }
+        type Bar = { b: number }
+        type FooAndBar = Foo & Bar
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec![],
+        scope: TestScope {
+            type_bindings: vec!["Foo", "Bar", "FooAndBar"],
+            inner: vec![
+                TestScope::default(),
+                TestScope::default(),
+                TestScope {
+                    type_references: vec!["Foo", "Bar"],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
+
+#[test]
+pub fn recursive_type() {
+    let source = r#"
+        type Foo = Foo[]
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec![],
+        scope: TestScope {
+            type_bindings: vec!["Foo"],
+            inner: vec![TestScope {
+                type_references: vec!["Foo"],
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
+
+#[test]
+pub fn conditional() {
+    let source = r#"
+        type ElementOf<A> = A extends Array<infer E> ? E : never
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec![],
+        scope: TestScope {
+            type_bindings: vec!["ElementOf"],
+            inner: vec![TestScope {
+                type_bindings: vec!["A"],
+                inner: vec![TestScope {
+                    type_references: vec!["A", "Array"],
+                    type_bindings: vec!["E"],
+                    inner: vec![
+                        TestScope {
+                            type_references: vec!["E"],
+                            ..TestScope::default()
+                        },
+                        TestScope::default(),
+                    ],
+                    ..TestScope::default()
+                }],
                 ..Default::default()
             }],
             ..Default::default()
