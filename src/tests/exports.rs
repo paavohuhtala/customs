@@ -20,7 +20,11 @@ pub fn smoke() {
         scope: TestScope {
             bindings: vec!["exportedConstant", "exportedFunction"],
             type_bindings: vec!["ExportedType", "ExportedInterface"],
-            inner: vec![TestScope::default(), TestScope::default()],
+            inner: vec![
+                TestScope::default(),
+                TestScope::default(),
+                TestScope::default(),
+            ],
             ..Default::default()
         },
     };
@@ -73,6 +77,7 @@ pub fn export_statement() {
             bindings: vec!["a"],
             type_bindings: vec!["Foo"],
             ambiguous_references: vec!["a", "Foo"],
+            inner: vec![TestScope::default()],
             ..Default::default()
         },
     };
@@ -195,6 +200,27 @@ pub fn default_statement_const() {
 pub fn default_statement_interface() {
     let source = r#"
         interface Foo { x: number }
+        export default Foo
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec!["default"],
+        scope: TestScope {
+            type_bindings: vec!["Foo"],
+            ambiguous_references: vec!["Foo"],
+            inner: vec![TestScope::default()],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
+
+#[test]
+pub fn default_statement_type() {
+    let source = r#"
+        type Foo = { x: number }
         export default Foo
     "#;
 

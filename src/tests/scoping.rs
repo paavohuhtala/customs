@@ -18,6 +18,7 @@ pub fn block() {
             inner: vec![TestScope {
                 bindings: vec!["foo"],
                 type_bindings: vec!["Bar"],
+                inner: vec![TestScope::default()],
                 ..Default::default()
             }],
             ..Default::default()
@@ -76,57 +77,32 @@ pub fn function_generics() {
 }
 
 #[test]
-pub fn function_initial() {
-    let source = r#"
-        function f(a: string, b: string = a) { }
-    "#;
-
-    let spec = TestSpec {
-        source,
-        exports: vec![],
-        scope: TestScope {
-            bindings: vec!["f"],
-            inner: vec![TestScope {
-                bindings: vec!["a", "b"],
-                references: vec!["a"],
-                ..Default::default()
-            }],
-            ..Default::default()
-        },
-    };
-
-    run_test(spec);
-}
-
-#[test]
-pub fn function_self_reference() {
-    let source = r#"
-        function f<T>(a: T, b: T = a): T { return f(b) }
-    "#;
-
-    let spec = TestSpec {
-        source,
-        exports: vec![],
-        scope: TestScope {
-            bindings: vec!["f"],
-            inner: vec![TestScope {
-                type_bindings: vec!["T"],
-                bindings: vec!["a", "b"],
-                type_references: vec!["T"],
-                references: vec!["a", "b", "f"],
-                ..Default::default()
-            }],
-            ..Default::default()
-        },
-    };
-
-    run_test(spec);
-}
-
-#[test]
-pub fn interface_type_parameters() {
+pub fn interface_generics() {
     let source = r#"
         interface Foo<T> { x: T }
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec![],
+        scope: TestScope {
+            type_bindings: vec!["Foo"],
+            inner: vec![TestScope {
+                type_bindings: vec!["T"],
+                type_references: vec!["T"],
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
+
+#[test]
+pub fn type_generics() {
+    let source = r#"
+        type Foo<T> = { x: T }
     "#;
 
     let spec = TestSpec {

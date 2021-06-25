@@ -9,6 +9,7 @@ pub fn ts_type() {
         exports: vec![],
         scope: TestScope {
             type_bindings: vec!["Foo"],
+            inner: vec![TestScope::default()],
             ..Default::default()
         },
     };

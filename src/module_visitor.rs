@@ -12,8 +12,8 @@ use swc_ecma_ast::{
     ArrayPat, BindingIdent, BlockStmt, ClassDecl, ClassExpr, DefaultDecl, ExportDecl,
     ExportDefaultDecl, ExportDefaultExpr, ExportSpecifier, Expr, FnExpr, Function, Ident,
     ImportDefaultSpecifier, ImportNamedSpecifier, ImportSpecifier, ImportStarAsSpecifier,
-    NamedExport, ObjectPatProp, TsInterfaceDecl, TsPropertySignature, TsType, TsTypeAliasDecl,
-    TsTypeParam, TsTypeQuery, TsTypeRef,
+    NamedExport, ObjectPatProp, TsEntityName, TsExprWithTypeArgs, TsInterfaceDecl,
+    TsPropertySignature, TsType, TsTypeAliasDecl, TsTypeParam, TsTypeQuery, TsTypeRef,
 };
 use swc_ecma_visit::Node;
 
@@ -388,17 +388,6 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         self.register_decl(&interface_decl.id, interface_decl.id.span);
         self.add_type_binding(&interface_decl.id);
 
-        for base in &interface_decl.extends {
-            match &base.expr {
-                swc_ecma_ast::TsEntityName::TsQualifiedName(_) => {
-                    // TODO?
-                }
-                swc_ecma_ast::TsEntityName::Ident(ident) => {
-                    self.mark_type_used(ident);
-                }
-            }
-        }
-
         self.enter_type();
         self.enter_scope(ScopeKind::Type);
 
@@ -406,7 +395,12 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
             self.visit_ts_type_param_decl(type_params, interface_decl);
         }
 
+        for ts_expr in &interface_decl.extends {
+            self.visit_ts_expr_with_type_args(ts_expr, interface_decl);
+        }
+
         self.visit_ts_interface_body(&interface_decl.body, interface_decl);
+
         self.exit_scope();
         self.exit_type();
     }
@@ -431,15 +425,31 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         self.register_decl(&type_alias_decl.id, type_alias_decl.id.span);
         self.add_type_binding(&type_alias_decl.id);
 
+        self.enter_type();
+        self.enter_scope(ScopeKind::Type);
+
         if let Some(type_params) = &type_alias_decl.type_params {
-            self.enter_scope(ScopeKind::Type);
             self.visit_ts_type_param_decl(type_params, type_alias_decl);
         }
 
         self.visit_ts_type(&type_alias_decl.type_ann, type_alias_decl);
 
-        if type_alias_decl.type_params.is_some() {
-            self.exit_scope();
+        self.exit_scope();
+        self.exit_type();
+    }
+
+    fn visit_ts_expr_with_type_args(&mut self, ts_expr: &TsExprWithTypeArgs, _parent: &dyn Node) {
+        match &ts_expr.expr {
+            TsEntityName::TsQualifiedName(_) => {
+                // TODO?
+            }
+            TsEntityName::Ident(ident) => {
+                self.mark_type_used(ident);
+            }
+        }
+
+        if let Some(type_args) = &ts_expr.type_args {
+            self.visit_ts_type_param_instantiation(type_args, ts_expr);
         }
     }
 
@@ -463,6 +473,10 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
             swc_ecma_ast::TsEntityName::Ident(ident) => {
                 self.mark_type_used(ident);
             }
+        }
+
+        if let Some(type_params) = &type_ref.type_params {
+            self.visit_ts_type_param_instantiation(type_params, type_ref);
         }
     }
 
