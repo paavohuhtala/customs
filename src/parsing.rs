@@ -1,6 +1,13 @@
-use std::{collections::HashMap, ops::Deref, path::Path, rc::Rc, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Deref,
+    path::Path,
+    rc::Rc,
+    sync::Arc,
+};
 
 use anyhow::{anyhow, Context};
+use itertools::Itertools;
 use lazy_static::lazy_static;
 use rayon::prelude::*;
 use regex::Regex;
@@ -13,7 +20,7 @@ use crate::{
     config::Config,
     dependency_graph::{
         normalize_module_path, resolve_import_source, Export, ExportName, Module, ModuleKind,
-        ModuleSourceAndLine, NormalizedImportSource, NormalizedModulePath, Visibility,
+        ModuleSourceAndLine, NormalizedImportSource, NormalizedModulePath, Usage, Visibility,
     },
     module_visitor::{ModuleImport, ModuleVisitor},
 };
@@ -138,15 +145,59 @@ fn parse_module(root: &Path, file_path: &Path, module_kind: ModuleKind) -> anyho
     let mut visitor = ModuleVisitor::new();
     visitor.visit_module(&module_ast, &module_ast);
 
-    for export in visitor.exports {
-        module.add_export((
-            export.name,
-            Export::new(
-                export.kind,
-                Visibility::Exported,
-                create_export_source(&module, &source_map, export.span),
-            ),
-        ))
+    let binding_counts = visitor
+        .scopes
+        .iter()
+        .flat_map(|scope| {
+            scope
+                .bindings
+                .iter()
+                .chain(scope.type_bindings.iter().map(|binding| binding.0))
+        })
+        .counts();
+
+    let reference_counts = visitor
+        .scopes
+        .iter()
+        .flat_map(|scope| {
+            scope
+                .references
+                .iter()
+                .chain(scope.ambiguous_references.iter())
+                .chain(scope.type_references.iter())
+        })
+        .counts();
+
+    let named_exports = visitor
+        .exports
+        .iter()
+        .filter_map(|export| export.local_name.as_ref());
+
+    let (non_shadowed_exports, _shadowed_exports): (Vec<_>, Vec<_>) =
+        named_exports.partition(|id| *binding_counts.get(id).unwrap_or(&1) == 1);
+
+    let locally_used_exports = non_shadowed_exports
+        .into_iter()
+        .filter(|export| *reference_counts.get(export).unwrap_or(&0) > 0)
+        .collect::<HashSet<_>>();
+
+    for export in &visitor.exports {
+        let export_entry = Export::new(
+            export.kind,
+            Visibility::Exported,
+            create_export_source(&module, &source_map, export.span),
+        );
+
+        if let Some(local_name) = &export.local_name {
+            if locally_used_exports.contains(local_name) {
+                export_entry.usage.set(Usage {
+                    used_locally: true,
+                    used_externally: false,
+                });
+            }
+        }
+
+        module.add_export((export.name.clone(), export_entry))
     }
 
     // In declaration modules all types defined in the root scope are implicitly exported

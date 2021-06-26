@@ -206,7 +206,7 @@ impl ModuleVisitor {
             ExportState::Private => {}
             ExportState::InExport => self.exports.push(ModuleExport {
                 name: ExportName::Named(name.sym.clone()),
-                local_name: None,
+                local_name: Some(name.sym.clone()),
                 span,
                 kind,
             }),
@@ -275,8 +275,8 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         _parent: &dyn Node,
     ) {
         self.exports.push(ModuleExport {
-            local_name: None,
             name: ExportName::Default,
+            local_name: None,
             span: export_default_expr.span,
             kind: ExportKind::Unknown,
         });

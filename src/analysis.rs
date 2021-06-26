@@ -1,7 +1,5 @@
 use std::collections::HashSet;
 
-use itertools::Itertools;
-
 use crate::{
     config::Config,
     dependency_graph::{
@@ -69,7 +67,7 @@ pub fn resolve_module_imports(modules: &std::collections::HashMap<NormalizedModu
 }
 
 pub struct UnusedExportsResults {
-    pub sorted_exports: Vec<(ExportName, ModuleSourceAndLine)>,
+    pub sorted_exports: Vec<(ExportName, ModuleSourceAndLine, Usage)>,
 }
 
 pub fn find_unused_exports(
@@ -83,15 +81,17 @@ pub fn find_unused_exports(
             module
                 .exports
                 .into_iter()
-                .filter(|(_, export)| !export.usage.get().is_used())
+                .filter(|(_, export)| !export.usage.get().used_externally)
                 .filter(|(_, export)| export.kind.matches_analyze_target(config.analyze_target))
-                .sorted_unstable_by_key(|(_, export)| export.location.line())
         })
-        .map(|(name, export)| (name, export.location))
-        .collect::<Vec<(ExportName, ModuleSourceAndLine)>>();
+        .map(|(name, export)| (name, export.location, export.usage.take()))
+        .collect::<Vec<(ExportName, ModuleSourceAndLine, Usage)>>();
 
-    sorted_exports.sort_unstable_by(|(_, a_location), (_, b_location)| {
-        a_location.path().cmp(b_location.path())
+    sorted_exports.sort_unstable_by(|(_, a_location, _), (_, b_location, _)| {
+        a_location
+            .path()
+            .cmp(b_location.path())
+            .then_with(|| a_location.line().cmp(&b_location.line()))
     });
 
     UnusedExportsResults { sorted_exports }
