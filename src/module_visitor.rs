@@ -109,7 +109,7 @@ impl ModuleVisitor {
     pub fn new() -> Self {
         let root_scope = Scope::new(0, None, ScopeKind::Root);
         let scope_stack = vec![root_scope.id];
-        let scopes = vec![root_scope.clone()];
+        let scopes = vec![root_scope];
 
         ModuleVisitor {
             scope_stack,
@@ -211,6 +211,12 @@ impl ModuleVisitor {
                 kind,
             }),
         }
+    }
+}
+
+impl Default for ModuleVisitor {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -332,7 +338,7 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
             let imports_for_module = self
                 .imports
                 .entry(source.value.to_string())
-                .or_insert(Vec::new());
+                .or_insert_with(Vec::new);
             imports_for_module.append(&mut imports);
         }
 
@@ -391,7 +397,7 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         let module_imports = self
             .imports
             .entry(import_decl.src.value.to_string())
-            .or_insert(Vec::new());
+            .or_insert_with(Vec::new);
 
         module_imports.append(&mut new_imports);
     }
@@ -517,12 +523,8 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
     }
 
     fn visit_prop_name(&mut self, prop_name: &PropName, _parent: &dyn Node) {
-        match prop_name {
-            PropName::Computed(computed) => {
-                self.visit_expr(&computed.expr, prop_name);
-            }
-            // Do not handle others, most notably Ident, so we don't get false usages
-            _ => {}
+        if let PropName::Computed(computed) = prop_name {
+            self.visit_expr(&computed.expr, prop_name);
         }
     }
 
@@ -660,10 +662,8 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
     }
 
     fn visit_array_pat(&mut self, array: &ArrayPat, _parent: &dyn Node) {
-        for elem in &array.elems {
-            if let Some(pat) = elem {
-                self.visit_pat(pat, array);
-            }
+        for pat in array.elems.iter().flatten() {
+            self.visit_pat(pat, array);
         }
     }
 

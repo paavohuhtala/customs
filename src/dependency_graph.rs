@@ -170,12 +170,13 @@ pub enum ExportKind {
 
 impl ExportKind {
     pub fn matches_analyze_target(self, target: AnalyzeTarget) -> bool {
-        match (self, target) {
-            (_, AnalyzeTarget::All) => true,
-            (ExportKind::Type | ExportKind::Class, AnalyzeTarget::Types) => true,
-            (ExportKind::Value | ExportKind::Class, AnalyzeTarget::Values) => true,
-            _ => false,
-        }
+        matches!(
+            (self, target),
+            (_, AnalyzeTarget::All)
+                | (ExportKind::Class | ExportKind::Enum, _)
+                | (ExportKind::Type, AnalyzeTarget::Types)
+                | (ExportKind::Value, AnalyzeTarget::Values)
+        )
     }
 }
 
@@ -226,7 +227,7 @@ pub fn resolve_import_source(
     current_folder: &Path,
     import_source: &str,
 ) -> anyhow::Result<NormalizedImportSource> {
-    if !import_source.starts_with(".") {
+    if !import_source.starts_with('.') {
         return Ok(NormalizedImportSource::Global(String::from(import_source)));
     }
 
