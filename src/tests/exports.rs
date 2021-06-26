@@ -270,3 +270,22 @@ pub fn default_statement_type() {
 
     run_test(spec);
 }
+
+#[test]
+pub fn destructured() {
+    let source = r#"
+        export const { x: { y } } = { x: { y: "hello" } }
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec!["y"],
+        imports: vec![],
+        scope: TestScope {
+            bindings: vec!["y"],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}

@@ -9,18 +9,19 @@ use std::{
 use swc_atoms::JsWord;
 use swc_common::Span;
 use swc_ecma_ast::{
-    ArrayPat, BindingIdent, BlockStmt, ClassDecl, ClassExpr, DefaultDecl, ExportDecl,
-    ExportDefaultDecl, ExportDefaultExpr, ExportSpecifier, Expr, FnExpr, Function, Ident,
-    ImportDecl, ImportDefaultSpecifier, ImportNamedSpecifier, ImportSpecifier,
-    ImportStarAsSpecifier, NamedExport, ObjectPatProp, TsConditionalType, TsEntityName,
-    TsExprWithTypeArgs, TsInterfaceDecl, TsMappedType, TsPropertySignature, TsType,
-    TsTypeAliasDecl, TsTypeParam, TsTypeQuery, TsTypeRef,
+    ArrayPat, ArrowExpr, BindingIdent, BlockStmt, BlockStmtOrExpr, ClassDecl, ClassExpr,
+    DefaultDecl, ExportDecl, ExportDefaultDecl, ExportDefaultExpr, ExportSpecifier, Expr,
+    ExprOrSuper, FnDecl, FnExpr, Function, Ident, ImportDecl, ImportDefaultSpecifier,
+    ImportNamedSpecifier, ImportSpecifier, ImportStarAsSpecifier, MemberExpr, NamedExport,
+    ObjectPatProp, PropName, TsConditionalType, TsEntityName, TsEnumDecl, TsExprWithTypeArgs,
+    TsIndexSignature, TsInterfaceDecl, TsMappedType, TsPropertySignature, TsType, TsTypeAliasDecl,
+    TsTypeParam, TsTypeQuery, TsTypeQueryExpr, TsTypeRef,
 };
 use swc_ecma_visit::Node;
 
 use crate::{
     ast_utils::walk_ts_qualified_name,
-    dependency_graph::{ExportName, ImportName},
+    dependency_graph::{ExportKind, ExportName, ImportName},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,7 +52,7 @@ pub struct Scope {
     pub(crate) kind: ScopeKind,
     pub(crate) parent: Option<ScopeId>,
     pub(crate) bindings: HashSet<JsWord>,
-    pub(crate) type_bindings: HashSet<JsWord>,
+    pub(crate) type_bindings: HashMap<JsWord, Span>,
     pub(crate) references: HashSet<JsWord>,
     pub(crate) type_references: HashSet<JsWord>,
     pub(crate) ambiguous_references: HashSet<JsWord>,
@@ -64,7 +65,7 @@ impl Scope {
             kind,
             parent,
             bindings: HashSet::new(),
-            type_bindings: HashSet::new(),
+            type_bindings: HashMap::new(),
             references: HashSet::new(),
             type_references: HashSet::new(),
             ambiguous_references: HashSet::new(),
@@ -77,6 +78,7 @@ pub struct ModuleExport {
     pub(crate) span: Span,
     pub(crate) name: ExportName,
     pub(crate) local_name: Option<JsWord>,
+    pub(crate) kind: ExportKind,
 }
 
 #[derive(Debug)]
@@ -142,12 +144,10 @@ impl ModuleVisitor {
     }
 
     fn enter_export(&mut self) {
-        assert!(self.export_state == ExportState::Private);
         self.export_state = ExportState::InExport;
     }
 
     fn exit_export(&mut self) {
-        assert!(self.export_state == ExportState::InExport);
         self.export_state = ExportState::Private;
     }
 
@@ -167,7 +167,7 @@ impl ModuleVisitor {
 
     fn add_type_binding(&mut self, ident: &Ident) {
         let scope = self.current_scope();
-        scope.type_bindings.insert(ident.sym.clone());
+        scope.type_bindings.insert(ident.sym.clone(), ident.span);
     }
 
     fn mark_used_atom(&mut self, atom: &JsWord) {
@@ -197,7 +197,7 @@ impl ModuleVisitor {
         self.scope_stack.last().unwrap().0 == 0
     }
 
-    fn register_decl(&mut self, name: &Ident, span: Span) {
+    fn register_decl(&mut self, name: &Ident, span: Span, kind: ExportKind) {
         if !self.in_root_scope() {
             return;
         }
@@ -208,6 +208,7 @@ impl ModuleVisitor {
                 name: ExportName::Named(name.sym.clone()),
                 local_name: None,
                 span,
+                kind,
             }),
         }
     }
@@ -220,22 +221,20 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         self.exit_export();
     }
 
-    fn visit_export_default_decl(&mut self, default_decl: &ExportDefaultDecl, parent: &dyn Node) {
-        let local_ident = match &default_decl.decl {
-            DefaultDecl::Class(ClassExpr {
-                ident: Some(ident), ..
-            })
-            | DefaultDecl::Fn(FnExpr {
-                ident: Some(ident), ..
-            })
-            | DefaultDecl::TsInterfaceDecl(TsInterfaceDecl { id: ident, .. }) => Some(ident),
-            _ => None,
+    fn visit_export_default_decl(&mut self, default_decl: &ExportDefaultDecl, _parent: &dyn Node) {
+        let (local_ident, kind) = match &default_decl.decl {
+            DefaultDecl::Class(ClassExpr { ident, .. }) => (ident.as_ref(), ExportKind::Class),
+            DefaultDecl::Fn(FnExpr { ident, .. }) => (ident.as_ref(), ExportKind::Value),
+            DefaultDecl::TsInterfaceDecl(TsInterfaceDecl { id: ident, .. }) => {
+                (Some(ident), ExportKind::Type)
+            }
         };
 
         self.exports.push(ModuleExport {
             name: ExportName::Default,
             span: default_decl.span,
             local_name: local_ident.map(|ident| ident.sym.clone()),
+            kind,
         });
 
         if let Some(local_ident) = local_ident {
@@ -253,7 +252,15 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
             }
         }
 
-        swc_ecma_visit::visit_export_default_decl(self, default_decl, parent);
+        match &default_decl.decl {
+            DefaultDecl::Class(class) => {
+                self.visit_class_expr(class, default_decl);
+            }
+            DefaultDecl::Fn(fn_expr) => self.visit_fn_expr(fn_expr, default_decl),
+            DefaultDecl::TsInterfaceDecl(ts_interface) => {
+                self.visit_ts_interface_decl(ts_interface, default_decl);
+            }
+        }
     }
 
     fn visit_export_default_expr(
@@ -265,6 +272,7 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
             local_name: None,
             name: ExportName::Default,
             span: export_default_expr.span,
+            kind: ExportKind::Unknown,
         });
 
         match &*export_default_expr.expr {
@@ -284,6 +292,7 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
                         name: ExportName::Named(namespace_export.name.sym.clone()),
                         local_name: None,
                         span: namespace_export.span,
+                        kind: ExportKind::Unknown,
                     },
                     ModuleImport {
                         imported_name: ImportName::Wildcard,
@@ -307,6 +316,7 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
                             name: export_name,
                             span: named.span,
                             local_name: Some(named.orig.sym.clone()),
+                            kind: ExportKind::Unknown,
                         },
                         ModuleImport {
                             imported_name: ImportName::Named(named.orig.sym.clone()),
@@ -352,7 +362,11 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
                     local, imported, ..
                 }) => {
                     let imported = imported.as_ref().unwrap_or(local);
-                    let name = ImportName::Named(imported.sym.clone());
+
+                    let name = match imported.sym.as_ref() {
+                        "default" => ImportName::Default,
+                        _ => ImportName::Named(imported.sym.clone()),
+                    };
 
                     new_imports.push(ModuleImport {
                         imported_name: name,
@@ -382,12 +396,45 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         module_imports.append(&mut new_imports);
     }
 
-    fn visit_fn_decl(&mut self, fn_decl: &swc_ecma_ast::FnDecl, _parent: &dyn Node) {
-        self.register_decl(&fn_decl.ident, fn_decl.function.span);
+    fn visit_fn_decl(&mut self, fn_decl: &FnDecl, _parent: &dyn Node) {
+        self.register_decl(&fn_decl.ident, fn_decl.function.span, ExportKind::Value);
 
         self.add_binding(&fn_decl.ident);
 
         self.visit_function(&fn_decl.function, fn_decl);
+    }
+
+    fn visit_fn_expr(&mut self, fn_expr: &FnExpr, _parent: &dyn Node) {
+        self.visit_function(&fn_expr.function, fn_expr);
+    }
+
+    fn visit_arrow_expr(&mut self, arrow_expr: &ArrowExpr, _parent: &dyn Node) {
+        self.enter_scope(ScopeKind::Block);
+
+        // Notably we skip the extra scope introduced by BlockStmtOrExpr
+
+        self.visit_pats(&arrow_expr.params, arrow_expr);
+
+        if let Some(type_params) = &arrow_expr.type_params {
+            self.visit_ts_type_param_decl(type_params, arrow_expr);
+        }
+
+        if let Some(return_type) = &arrow_expr.return_type {
+            self.visit_ts_type_ann(return_type, arrow_expr);
+        }
+
+        match &arrow_expr.body {
+            BlockStmtOrExpr::BlockStmt(block) => {
+                for statement in &block.stmts {
+                    self.visit_stmt(statement, block);
+                }
+            }
+            BlockStmtOrExpr::Expr(expr) => {
+                self.visit_expr(expr, arrow_expr);
+            }
+        }
+
+        self.exit_scope();
     }
 
     fn visit_function(&mut self, function: &Function, _parent: &dyn Node) {
@@ -414,15 +461,18 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
     }
 
     fn visit_class_decl(&mut self, class_decl: &ClassDecl, _parent: &dyn Node) {
-        self.register_decl(&class_decl.ident, class_decl.ident.span);
+        self.register_decl(&class_decl.ident, class_decl.ident.span, ExportKind::Class);
 
         self.add_binding(&class_decl.ident);
         self.add_type_binding(&class_decl.ident);
+
+        self.enter_scope(ScopeKind::Type);
         self.visit_class(&class_decl.class, class_decl);
+        self.exit_scope();
     }
 
     fn visit_ts_interface_decl(&mut self, interface_decl: &TsInterfaceDecl, _parent: &dyn Node) {
-        self.register_decl(&interface_decl.id, interface_decl.id.span);
+        self.register_decl(&interface_decl.id, interface_decl.id.span, ExportKind::Type);
         self.add_type_binding(&interface_decl.id);
 
         self.enter_type();
@@ -458,8 +508,30 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         // TODO: Should we ever visit init or params?
     }
 
+    fn visit_ts_index_signature(&mut self, index_signature: &TsIndexSignature, parent: &dyn Node) {
+        self.enter_scope(ScopeKind::Block);
+
+        swc_ecma_visit::visit_ts_index_signature(self, index_signature, parent);
+
+        self.exit_scope();
+    }
+
+    fn visit_prop_name(&mut self, prop_name: &PropName, _parent: &dyn Node) {
+        match prop_name {
+            PropName::Computed(computed) => {
+                self.visit_expr(&computed.expr, prop_name);
+            }
+            // Do not handle others, most notably Ident, so we don't get false usages
+            _ => {}
+        }
+    }
+
     fn visit_ts_type_alias_decl(&mut self, type_alias_decl: &TsTypeAliasDecl, _parent: &dyn Node) {
-        self.register_decl(&type_alias_decl.id, type_alias_decl.id.span);
+        self.register_decl(
+            &type_alias_decl.id,
+            type_alias_decl.id.span,
+            ExportKind::Type,
+        );
         self.add_type_binding(&type_alias_decl.id);
 
         self.enter_type();
@@ -531,10 +603,10 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
 
     fn visit_ts_type_ref(&mut self, type_ref: &TsTypeRef, _parent: &dyn Node) {
         match &type_ref.type_name {
-            swc_ecma_ast::TsEntityName::TsQualifiedName(_) => {
+            TsEntityName::TsQualifiedName(_) => {
                 // TODO?
             }
-            swc_ecma_ast::TsEntityName::Ident(ident) => {
+            TsEntityName::Ident(ident) => {
                 self.mark_type_used(ident);
             }
         }
@@ -546,16 +618,16 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
 
     fn visit_ts_type_query(&mut self, type_query: &TsTypeQuery, _parent: &dyn Node) {
         match &type_query.expr_name {
-            swc_ecma_ast::TsTypeQueryExpr::TsEntityName(entity_name) => match entity_name {
-                swc_ecma_ast::TsEntityName::TsQualifiedName(qualified_name) => {
+            TsTypeQueryExpr::TsEntityName(entity_name) => match entity_name {
+                TsEntityName::TsQualifiedName(qualified_name) => {
                     let ident = walk_ts_qualified_name(&qualified_name);
                     self.mark_used(ident);
                 }
-                swc_ecma_ast::TsEntityName::Ident(ident) => {
+                TsEntityName::Ident(ident) => {
                     self.mark_used(&ident);
                 }
             },
-            swc_ecma_ast::TsTypeQueryExpr::Import(_import) => {
+            TsTypeQueryExpr::Import(_import) => {
                 todo!("typeof on import items not implemented")
             }
         }
@@ -567,6 +639,11 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         self.exit_type();
     }
 
+    fn visit_ts_enum_decl(&mut self, ts_enum_decl: &TsEnumDecl, _parent: &dyn Node) {
+        self.register_decl(&ts_enum_decl.id, ts_enum_decl.span, ExportKind::Enum);
+        self.visit_ts_enum_members(&ts_enum_decl.members, ts_enum_decl);
+    }
+
     fn visit_block_stmt(&mut self, block: &BlockStmt, _parent: &dyn Node) {
         self.enter_scope(ScopeKind::Block);
         self.visit_stmts(&block.stmts, block);
@@ -574,8 +651,12 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
     }
 
     fn visit_binding_ident(&mut self, ident: &BindingIdent, _parent: &dyn Node) {
-        self.register_decl(&ident.id, ident.id.span);
+        self.register_decl(&ident.id, ident.id.span, ExportKind::Value);
         self.add_binding(&ident.id);
+
+        if let Some(type_ann) = &ident.type_ann {
+            self.visit_ts_type_ann(type_ann, ident);
+        }
     }
 
     fn visit_array_pat(&mut self, array: &ArrayPat, _parent: &dyn Node) {
@@ -594,12 +675,17 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
                     swc_ecma_ast::PropName::Ident(_ident) => {}
                     swc_ecma_ast::PropName::Str(_s) => {}
                     swc_ecma_ast::PropName::Num(_n) => {}
-                    swc_ecma_ast::PropName::Computed(_computed) => {}
+                    swc_ecma_ast::PropName::Computed(computed) => {
+                        self.visit_expr(&computed.expr, kv);
+                    }
                     swc_ecma_ast::PropName::BigInt(_bi) => {}
                 }
                 self.visit_pat(&kv.value, kv);
             }
             ObjectPatProp::Assign(assign) => {
+                self.register_decl(&assign.key, assign.span, ExportKind::Value);
+                self.add_binding(&assign.key);
+
                 if let Some(expr) = &assign.value {
                     self.visit_expr(expr, assign);
                 }
@@ -610,30 +696,23 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         }
     }
 
-    fn visit_expr(&mut self, expr: &Expr, parent: &dyn Node) {
-        match expr {
-            Expr::Ident(ident) => {
-                // TODO: this is not always correct?
-                self.mark_used(ident);
-            }
-            Expr::Member(member) => {
-                match &member.obj {
-                    swc_ecma_ast::ExprOrSuper::Super(_) => {}
-                    swc_ecma_ast::ExprOrSuper::Expr(expr) => {
-                        self.visit_expr(expr, member);
-                    }
-                }
+    fn visit_ident(&mut self, ident: &Ident, _parent: &dyn Node) {
+        self.mark_used(ident);
+    }
 
-                if member.computed {
-                    self.visit_expr(&member.prop, member);
-                } else {
-                    // TODO: Handle non-computed prop?
-                    // Could be useful for detecting unnecessary default / wildcard imports
-                }
+    fn visit_member_expr(&mut self, member: &MemberExpr, _parent: &dyn Node) {
+        match &member.obj {
+            ExprOrSuper::Super(_) => {}
+            ExprOrSuper::Expr(expr) => {
+                self.visit_expr(expr, member);
             }
-            otherwise => {
-                swc_ecma_visit::visit_expr(self, otherwise, parent);
-            }
+        }
+
+        if member.computed {
+            self.visit_expr(&member.prop, member);
+        } else {
+            // TODO: Handle non-computed prop?
+            // Could be useful for detecting unnecessary default / wildcard imports
         }
     }
 }

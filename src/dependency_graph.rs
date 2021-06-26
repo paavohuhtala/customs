@@ -163,6 +163,8 @@ impl ModuleKind {
 pub enum ExportKind {
     Type,
     Value,
+    Class,
+    Enum,
     Unknown,
 }
 
@@ -170,8 +172,8 @@ impl ExportKind {
     pub fn matches_analyze_target(self, target: AnalyzeTarget) -> bool {
         match (self, target) {
             (_, AnalyzeTarget::All) => true,
-            (ExportKind::Type, AnalyzeTarget::Types) => true,
-            (ExportKind::Value, AnalyzeTarget::Values) => true,
+            (ExportKind::Type | ExportKind::Class, AnalyzeTarget::Types) => true,
+            (ExportKind::Value | ExportKind::Class, AnalyzeTarget::Values) => true,
             _ => false,
         }
     }
@@ -214,20 +216,30 @@ pub fn normalize_module_path(
     Ok(NormalizedModulePath(normalized_path))
 }
 
-pub fn resolve_import_path(
+pub enum NormalizedImportSource {
+    Local(NormalizedModulePath),
+    Global(String),
+}
+
+pub fn resolve_import_source(
     project_root: &Path,
     current_folder: &Path,
     import_source: &str,
-) -> anyhow::Result<NormalizedModulePath> {
+) -> anyhow::Result<NormalizedImportSource> {
+    if !import_source.starts_with(".") {
+        return Ok(NormalizedImportSource::Global(String::from(import_source)));
+    }
+
     let mut absolute_path = RelativePath::new(import_source).to_logical_path(current_folder);
 
     for ext in ["d.ts", "ts", "tsx"] {
         let with_ext = absolute_path.clone().with_extension(ext);
         if with_ext.is_file() {
-            return normalize_module_path(project_root, &with_ext);
+            return normalize_module_path(project_root, &with_ext)
+                .map(NormalizedImportSource::Local);
         }
     }
 
     absolute_path.push("index.ts");
-    normalize_module_path(project_root, &absolute_path)
+    normalize_module_path(project_root, &absolute_path).map(NormalizedImportSource::Local)
 }

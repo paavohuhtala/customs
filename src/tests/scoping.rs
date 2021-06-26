@@ -57,6 +57,33 @@ pub fn function() {
 }
 
 #[test]
+pub fn arrow_function() {
+    let source = r#"
+        const outerFunction = () =>
+        {
+            const innerFunction = () => { }
+        }
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec![],
+        imports: vec![],
+        scope: TestScope {
+            bindings: vec!["outerFunction"],
+            inner: vec![TestScope {
+                bindings: vec!["innerFunction"],
+                inner: vec![TestScope::default()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
+
+#[test]
 pub fn function_generics() {
     let source = r#"
         function f<T>() { }

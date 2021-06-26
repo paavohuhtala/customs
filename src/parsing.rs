@@ -1,20 +1,21 @@
 use std::{collections::HashMap, ops::Deref, path::Path, rc::Rc, sync::Arc};
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use lazy_static::lazy_static;
 use rayon::prelude::*;
 use regex::Regex;
 
 use swc_common::{FileName, FilePathMapping, SourceFile, SourceMap, Span};
-use swc_ecma_ast::{Decl, DefaultDecl, Ident, ModuleDecl, ModuleItem, ObjectPatProp, Pat, Stmt};
 use swc_ecma_parser::StringInput;
+use swc_ecma_visit::Visit;
 
 use crate::{
     config::Config,
     dependency_graph::{
-        normalize_module_path, resolve_import_path, Export, ExportKind, ExportName, ImportName,
-        Module, ModuleKind, ModuleSourceAndLine, NormalizedModulePath, Visibility,
+        normalize_module_path, resolve_import_source, Export, ExportName, Module, ModuleKind,
+        ModuleSourceAndLine, NormalizedImportSource, NormalizedModulePath, Visibility,
     },
+    module_visitor::{ModuleImport, ModuleVisitor},
 };
 
 fn create_export_source(
@@ -29,130 +30,6 @@ fn create_export_source(
     ModuleSourceAndLine::new(module.source.clone(), line)
 }
 
-fn create_export_from_id(
-    module: &Module,
-    source_map: &SourceMap,
-    ident: &Ident,
-    kind: ExportKind,
-    visibility: Visibility,
-) -> (ExportName, Export) {
-    let line = source_map
-        .lookup_line(ident.span.lo())
-        .expect("The offset should always be in bounds")
-        .line;
-
-    let location = ModuleSourceAndLine::new(module.source.clone(), line);
-    let export = Export::new(kind, visibility, location);
-
-    let name = ExportName::Named(ident.sym.clone());
-
-    (name, export)
-}
-
-fn get_decl_exports(
-    decl: &Decl,
-    is_export_declaration: bool,
-    module: &mut Module,
-    source_map: &SourceMap,
-) {
-    let should_export_value = is_export_declaration;
-    let should_export_type = is_export_declaration || module.kind.is_declaration();
-    let type_visibility = if module.kind.is_declaration() {
-        Visibility::ImplicitlyExported
-    } else {
-        Visibility::Exported
-    };
-
-    match decl {
-        // TODO is this correct with classes exported from d.ts files?
-        Decl::Class(class) if should_export_value => {
-            module.add_export(create_export_from_id(
-                module,
-                source_map,
-                &class.ident,
-                ExportKind::Value,
-                Visibility::Exported,
-            ));
-        }
-        Decl::Fn(f) if should_export_value => {
-            module.add_export(create_export_from_id(
-                module,
-                source_map,
-                &f.ident,
-                ExportKind::Value,
-                Visibility::Exported,
-            ));
-        }
-        Decl::Var(var) if should_export_value => {
-            for declarator in &var.decls {
-                match &declarator.name {
-                    Pat::Ident(id) => {
-                        module.add_export(create_export_from_id(
-                            module,
-                            source_map,
-                            &id.id,
-                            ExportKind::Value,
-                            Visibility::Exported,
-                        ));
-                    }
-                    Pat::Object(pat) => {
-                        for prop in pat.props.iter() {
-                            match prop {
-                                ObjectPatProp::KeyValue(_) | ObjectPatProp::Rest(_) => {}
-                                ObjectPatProp::Assign(assign) => {
-                                    module.add_export(create_export_from_id(
-                                        module,
-                                        source_map,
-                                        &assign.key,
-                                        ExportKind::Value,
-                                        Visibility::Exported,
-                                    ))
-                                }
-                            }
-                        }
-                    }
-                    // TODO: Are these even syntactically valid?
-                    Pat::Array(_)
-                    | Pat::Rest(_)
-                    | Pat::Assign(_)
-                    | Pat::Invalid(_)
-                    | Pat::Expr(_) => {
-                        todo!()
-                    }
-                }
-            }
-        }
-        Decl::TsInterface(interface_decl) if should_export_type => {
-            module.add_export(create_export_from_id(
-                module,
-                source_map,
-                &interface_decl.id,
-                ExportKind::Type,
-                type_visibility,
-            ));
-        }
-        Decl::TsTypeAlias(type_alias_decl) if should_export_type => {
-            module.add_export(create_export_from_id(
-                module,
-                source_map,
-                &type_alias_decl.id,
-                ExportKind::Type,
-                type_visibility,
-            ));
-        }
-        Decl::TsEnum(enum_decl) if should_export_type => {
-            module.add_export(create_export_from_id(
-                module,
-                source_map,
-                &enum_decl.id,
-                ExportKind::Type,
-                type_visibility,
-            ));
-        }
-        _ => {}
-    }
-}
-
 fn normalize_package_import(import_source: &str) -> Option<String> {
     lazy_static! {
         // Parses the package name from an import source as capture group #1
@@ -163,63 +40,30 @@ fn normalize_package_import(import_source: &str) -> Option<String> {
     Some(captures.get(1)?.as_str().to_string())
 }
 
-fn parse_import_decl(
-    root: &Path,
-    current_folder: &Path,
-    import_decl: swc_ecma_ast::ImportDecl,
+fn parse_imports(
     module: &mut Module,
+    normalized_source: NormalizedImportSource,
+    imports: Vec<ModuleImport>,
 ) -> anyhow::Result<()> {
-    use swc_ecma_ast::ImportSpecifier;
-
-    // If this doesn't start with . it's a global module -> add it to global modules
-    if !import_decl.src.value.starts_with('.') {
-        match normalize_package_import(&import_decl.src.value) {
-            Some(package) => {
-                module.imported_packages.insert(package);
-            }
-            None => {
-                println!(
-                    "WARNING: Failed to normalize package import \"{}\"",
-                    import_decl.src.value
-                );
-            }
+    let normalized_module_path = match normalized_source {
+        NormalizedImportSource::Global(name) => {
+            let module_name =
+                normalize_package_import(&name).context("Failed to normalize package import")?;
+            module.imported_packages.insert(module_name);
+            return Ok(());
         }
-
-        return Ok(());
-    }
+        NormalizedImportSource::Local(path) => path,
+    };
 
     // TODO: handle CSS & other non-code imports
 
-    let normalized_import_source =
-        resolve_import_path(&root, current_folder, import_decl.src.value.deref())?;
+    let import_names = imports.into_iter().map(|import| import.imported_name);
 
-    let module_imports = module
+    module
         .imported_modules
-        .entry(normalized_import_source)
-        .or_insert_with(Vec::new);
-
-    for specifier in &import_decl.specifiers {
-        match specifier {
-            ImportSpecifier::Named(named) => {
-                let import_name = (named.imported.as_ref())
-                    .unwrap_or(&named.local)
-                    .sym
-                    .clone();
-
-                if &import_name == "default" {
-                    module_imports.push(ImportName::Default)
-                } else {
-                    module_imports.push(ImportName::Named(import_name));
-                }
-            }
-            ImportSpecifier::Default(_) => {
-                module_imports.push(ImportName::Default);
-            }
-            ImportSpecifier::Namespace(_) => {
-                module_imports.push(ImportName::Wildcard);
-            }
-        }
-    }
+        .entry(normalized_module_path)
+        .or_insert_with(Vec::new)
+        .extend(import_names);
 
     Ok(())
 }
@@ -291,70 +135,39 @@ fn parse_module(root: &Path, file_path: &Path, module_kind: ModuleKind) -> anyho
 
     let mut module = Module::new(file_path, normalized_path, module_kind);
 
-    let mut default_export: Option<(ExportKind, ModuleSourceAndLine)> = None;
+    let mut visitor = ModuleVisitor::new();
+    visitor.visit_module(&module_ast, &module_ast);
 
-    for item in module_ast.body {
-        match item {
-            ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) => {
-                get_decl_exports(&export_decl.decl, true, &mut module, &source_map);
-            }
-            ModuleItem::Stmt(Stmt::Decl(decl)) if module_kind.is_declaration() => {
-                get_decl_exports(&decl, false, &mut module, &source_map)
-            }
-            ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(named_export)) => {
-                for specifier in &named_export.specifiers {
-                    match specifier {
-                        swc_ecma_ast::ExportSpecifier::Namespace(_) => {
-                            todo!("Namespace re-exports not supported yet.");
-                        }
-                        swc_ecma_ast::ExportSpecifier::Default(default) => {
-                            module.add_export(create_export_from_id(
-                                &module,
-                                &source_map,
-                                &default.exported,
-                                ExportKind::Unknown,
-                                Visibility::Exported,
-                            ));
-                        }
-                        swc_ecma_ast::ExportSpecifier::Named(named) => {
-                            let name = named.exported.as_ref().unwrap_or(&named.orig);
+    for export in visitor.exports {
+        module.add_export((
+            export.name,
+            Export::new(
+                export.kind,
+                Visibility::Exported,
+                create_export_source(&module, &source_map, export.span),
+            ),
+        ))
+    }
 
-                            module.add_export(create_export_from_id(
-                                &module,
-                                &source_map,
-                                name,
-                                ExportKind::Unknown,
-                                Visibility::Exported,
-                            ))
-                        }
-                    }
-                }
-            }
-            ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(default_export_expr)) => {
-                let location = create_export_source(&module, &source_map, default_export_expr.span);
-                default_export = Some((ExportKind::Value, location));
-            }
-            ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(decl)) => {
-                let export_kind = match decl.decl {
-                    DefaultDecl::Class(_) | DefaultDecl::Fn(_) => ExportKind::Value,
-                    DefaultDecl::TsInterfaceDecl(_) => ExportKind::Type,
-                };
-
-                let location = create_export_source(&&module, &source_map, decl.span);
-                default_export = Some((export_kind, location));
-            }
-            ModuleItem::ModuleDecl(ModuleDecl::Import(import_decl)) => {
-                parse_import_decl(root, current_folder, import_decl, &mut module)?;
-            }
-            _ => {}
+    // In declaration modules all types defined in the root scope are implicitly exported
+    if module_kind.is_declaration() {
+        let root_scope = &visitor.scopes[0];
+        for (type_binding, span) in &root_scope.type_bindings {
+            let export_name = ExportName::Named(type_binding.clone());
+            module.add_export((
+                export_name,
+                Export::new(
+                    crate::dependency_graph::ExportKind::Type,
+                    Visibility::ImplicitlyExported,
+                    create_export_source(&module, &source_map, *span),
+                ),
+            ));
         }
     }
 
-    if let Some((kind, location)) = default_export {
-        module.add_export((
-            ExportName::Default,
-            Export::new(kind, Visibility::Exported, location),
-        ));
+    for (unnormalized_module, imports) in visitor.imports {
+        let source = resolve_import_source(root, current_folder, &unnormalized_module)?;
+        parse_imports(&mut module, source, imports)?;
     }
 
     Ok(module)

@@ -49,6 +49,22 @@ pub fn default() {
 }
 
 #[test]
+pub fn default_as() {
+    let source = r#"
+        import { default as renamedDefault } from "./foo" 
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec![],
+        imports: vec![("./foo", vec![("default", Some("renamedDefault"))])],
+        scope: TestScope::default(),
+    };
+
+    run_test(spec);
+}
+
+#[test]
 pub fn wildcard_as() {
     let source = r#"
         import * as wildcard from "./foo" 

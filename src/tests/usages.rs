@@ -289,6 +289,35 @@ pub fn function_self_reference() {
 }
 
 #[test]
+pub fn arrow_function() {
+    let source = r#"
+        type Foo = string
+        const f = (x: Foo) => { }
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec![],
+        imports: vec![],
+        scope: TestScope {
+            bindings: vec!["f"],
+            type_bindings: vec!["Foo"],
+            inner: vec![
+                TestScope::default(),
+                TestScope {
+                    bindings: vec!["x"],
+                    type_references: vec!["Foo"],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
+
+#[test]
 pub fn mapped_type() {
     let source = r#"
         type Key = "a" | "b"
@@ -314,6 +343,34 @@ pub fn mapped_type() {
                     ..Default::default()
                 },
             ],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
+
+#[test]
+pub fn indexed_type() {
+    let source = r#"
+        type Foo = {
+            [key: string]: number;
+        }
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec![],
+        imports: vec![],
+        scope: TestScope {
+            type_bindings: vec!["Foo"],
+            inner: vec![TestScope {
+                inner: vec![TestScope {
+                    bindings: vec!["key"],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
             ..Default::default()
         },
     };
@@ -430,6 +487,133 @@ pub fn conditional() {
                 }],
                 ..Default::default()
             }],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
+
+#[test]
+pub fn type_annotation_basic() {
+    let source = r#"
+        type Foo = string
+        const x: Foo = "bar"
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec![],
+        imports: vec![],
+        scope: TestScope {
+            type_bindings: vec!["Foo"],
+            bindings: vec!["x"],
+            type_references: vec!["Foo"],
+            inner: vec![TestScope::default()],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
+
+#[test]
+pub fn type_annotation_mapped_type() {
+    let source = r#"
+        type Key = "a" | "b"
+        const x: { [k in Key]: number } = { a: 10, b: 20 }
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec![],
+        imports: vec![],
+        scope: TestScope {
+            type_bindings: vec!["Key"],
+            bindings: vec!["x"],
+            inner: vec![
+                TestScope::default(),
+                TestScope {
+                    type_references: vec!["Key"],
+                    type_bindings: vec!["k"],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
+
+#[test]
+pub fn as_cast() {
+    let source = r#"
+        type Foo = string
+        const x = "bar" as Foo
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec![],
+        imports: vec![],
+        scope: TestScope {
+            type_bindings: vec!["Foo"],
+            bindings: vec!["x"],
+            type_references: vec!["Foo"],
+            inner: vec![TestScope::default()],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
+
+#[test]
+pub fn as_cast_object_literal() {
+    let source = r#"
+        type Foo = string
+        const x = { a: 10 } as { a: number, b?: Foo }
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec![],
+        imports: vec![],
+        scope: TestScope {
+            type_bindings: vec!["Foo"],
+            bindings: vec!["x"],
+            type_references: vec!["Foo"],
+            inner: vec![TestScope::default()],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
+
+#[test]
+pub fn as_cast_mapped_type_literal() {
+    let source = r#"
+        type Key = "a" | "b"
+        const x = { a: 10 } as { [k in Key]?: number }
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec![],
+        imports: vec![],
+        scope: TestScope {
+            type_bindings: vec!["Key"],
+            bindings: vec!["x"],
+            inner: vec![
+                TestScope::default(),
+                TestScope {
+                    type_bindings: vec!["k"],
+                    type_references: vec!["Key"],
+                    ..Default::default()
+                },
+            ],
             ..Default::default()
         },
     };

@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    borrow::Borrow,
+    collections::{HashMap, HashSet},
+};
 
 use crate::{
     dependency_graph::{ExportName, ImportName},
@@ -45,6 +48,46 @@ impl Default for TestScope {
     }
 }
 
+use std::cmp::Eq;
+use std::hash::Hash;
+
+trait SetLike<T> {
+    fn contains<Q>(&self, key: &Q) -> bool
+    where
+        T: Borrow<Q>,
+        Q: Hash + Eq;
+
+    fn len(&self) -> usize;
+}
+
+impl<K: Hash + Eq, V> SetLike<K> for HashMap<K, V> {
+    fn contains<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        self.contains_key(key)
+    }
+
+    fn len(&self) -> usize {
+        HashMap::len(self)
+    }
+}
+
+impl<K: Hash + Eq> SetLike<K> for HashSet<K> {
+    fn contains<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        HashSet::contains(self, key)
+    }
+
+    fn len(&self) -> usize {
+        HashSet::len(self)
+    }
+}
+
 pub struct TestSpec {
     pub(crate) source: &'static str,
     pub(crate) exports: Vec<&'static str>,
@@ -54,6 +97,7 @@ pub struct TestSpec {
 
 pub fn run_test(spec: TestSpec) {
     let visitor = parse_and_visit(spec.source);
+
     println!("{:#?}", visitor);
 
     assert_eq!(
@@ -147,7 +191,7 @@ pub fn run_test(spec: TestSpec) {
         kind_singular: &'static str,
         kind_plural: &'static str,
         expected: &[&'static str],
-        was: &HashSet<JsWord>,
+        was: &impl SetLike<JsWord>,
         scope_id: ScopeId,
     ) {
         assert_eq!(
