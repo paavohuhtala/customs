@@ -17,6 +17,7 @@ pub fn smoke() {
             "ExportedType",
             "ExportedInterface",
         ],
+        imports: vec![],
         scope: TestScope {
             bindings: vec!["exportedConstant", "exportedFunction"],
             type_bindings: vec!["ExportedType", "ExportedInterface"],
@@ -45,6 +46,7 @@ pub fn inner_scope() {
     let spec = TestSpec {
         source,
         exports: vec!["exportedFunction"],
+        imports: vec![],
         scope: TestScope {
             bindings: vec!["exportedFunction"],
             inner: vec![TestScope {
@@ -73,10 +75,33 @@ pub fn export_statement() {
     let spec = TestSpec {
         source,
         exports: vec!["a", "Foo"],
+        imports: vec![],
         scope: TestScope {
             bindings: vec!["a"],
             type_bindings: vec!["Foo"],
             ambiguous_references: vec!["a", "Foo"],
+            inner: vec![TestScope::default()],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
+
+#[test]
+pub fn export_statement_default() {
+    let source = r#"
+        type Foo = { x: number }
+        export { Foo as default }
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec!["default"],
+        imports: vec![],
+        scope: TestScope {
+            type_bindings: vec!["Foo"],
+            ambiguous_references: vec!["Foo"],
             inner: vec![TestScope::default()],
             ..Default::default()
         },
@@ -94,6 +119,7 @@ pub fn re_export() {
     let spec = TestSpec {
         source,
         exports: vec!["a", "Foo"],
+        imports: vec![("./a", vec![("a", None), ("Foo", None)])],
         scope: TestScope::default(),
     };
 
@@ -110,6 +136,7 @@ pub fn rename() {
     let spec = TestSpec {
         source,
         exports: vec!["b"],
+        imports: vec![],
         scope: TestScope {
             bindings: vec!["a"],
             ambiguous_references: vec!["a"],
@@ -129,6 +156,7 @@ pub fn default_function() {
     let spec = TestSpec {
         source,
         exports: vec!["default"],
+        imports: vec![],
         scope: TestScope {
             bindings: vec!["foo"],
             inner: vec![TestScope::default()],
@@ -148,6 +176,7 @@ pub fn default_unnamed_function() {
     let spec = TestSpec {
         source,
         exports: vec!["default"],
+        imports: vec![],
         scope: TestScope {
             inner: vec![TestScope::default()],
             ..Default::default()
@@ -166,6 +195,7 @@ pub fn default_interface() {
     let spec = TestSpec {
         source,
         exports: vec!["default"],
+        imports: vec![],
         scope: TestScope {
             type_bindings: vec!["Foo"],
             inner: vec![TestScope::default()],
@@ -186,6 +216,7 @@ pub fn default_statement_const() {
     let spec = TestSpec {
         source,
         exports: vec!["default"],
+        imports: vec![],
         scope: TestScope {
             bindings: vec!["foo"],
             ambiguous_references: vec!["foo"],
@@ -206,6 +237,7 @@ pub fn default_statement_interface() {
     let spec = TestSpec {
         source,
         exports: vec!["default"],
+        imports: vec![],
         scope: TestScope {
             type_bindings: vec!["Foo"],
             ambiguous_references: vec!["Foo"],
@@ -227,6 +259,7 @@ pub fn default_statement_type() {
     let spec = TestSpec {
         source,
         exports: vec!["default"],
+        imports: vec![],
         scope: TestScope {
             type_bindings: vec!["Foo"],
             ambiguous_references: vec!["Foo"],

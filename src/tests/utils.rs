@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    dependency_graph::ExportName,
+    dependency_graph::{ExportName, ImportName},
     module_visitor::{ModuleVisitor, Scope, ScopeId},
     parsing::module_from_source,
 };
 
+use anyhow::Context;
 use itertools::Itertools;
 use swc_atoms::JsWord;
 use swc_ecma_visit::Visit;
@@ -47,6 +48,7 @@ impl Default for TestScope {
 pub struct TestSpec {
     pub(crate) source: &'static str,
     pub(crate) exports: Vec<&'static str>,
+    pub(crate) imports: Vec<(&'static str, Vec<(&'static str, Option<&'static str>)>)>,
     pub(crate) scope: TestScope,
 }
 
@@ -75,6 +77,58 @@ pub fn run_test(spec: TestSpec) {
             "Should contain export {}",
             export
         );
+    }
+
+    assert_eq!(
+        spec.imports.len(),
+        visitor.imports.len(),
+        "Expected import source counts to match"
+    );
+
+    for (source, imports) in &spec.imports {
+        let imports_from_source = visitor
+            .imports
+            .get(*source)
+            .with_context(|| format!("Expected import map to contain module {}", source))
+            .unwrap();
+
+        let imports_by_name = imports_from_source
+            .iter()
+            .map(|import| (import.imported_name.clone(), import))
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(
+            imports.len(),
+            imports_from_source.len(),
+            "Expected import from {} to contain {} items",
+            source,
+            imports.len()
+        );
+
+        for &(expected_symbol, expected_local_name) in imports {
+            let expected_import_name = match expected_symbol {
+                "default" => ImportName::Default,
+                "*" => ImportName::Wildcard,
+                otherwise => ImportName::Named(JsWord::from(otherwise)),
+            };
+
+            let expected_local_name = expected_local_name.map(JsWord::from);
+
+            let imported_symbol = imports_by_name
+                .get(&expected_import_name)
+                .with_context(|| {
+                    format!(
+                        "Expected imports from {} to contain {}",
+                        source, expected_symbol,
+                    )
+                })
+                .unwrap();
+
+            assert_eq!(
+                expected_local_name, imported_symbol.local_binding,
+                "Expected local binding names to match"
+            );
+        }
     }
 
     let scopes_by_id: HashMap<_, _> = visitor

@@ -11,10 +11,10 @@ use swc_common::Span;
 use swc_ecma_ast::{
     ArrayPat, BindingIdent, BlockStmt, ClassDecl, ClassExpr, DefaultDecl, ExportDecl,
     ExportDefaultDecl, ExportDefaultExpr, ExportSpecifier, Expr, FnExpr, Function, Ident,
-    ImportDefaultSpecifier, ImportNamedSpecifier, ImportSpecifier, ImportStarAsSpecifier,
-    NamedExport, ObjectPatProp, TsConditionalType, TsEntityName, TsExprWithTypeArgs,
-    TsInterfaceDecl, TsMappedType, TsPropertySignature, TsType, TsTypeAliasDecl, TsTypeParam,
-    TsTypeQuery, TsTypeRef,
+    ImportDecl, ImportDefaultSpecifier, ImportNamedSpecifier, ImportSpecifier,
+    ImportStarAsSpecifier, NamedExport, ObjectPatProp, TsConditionalType, TsEntityName,
+    TsExprWithTypeArgs, TsInterfaceDecl, TsMappedType, TsPropertySignature, TsType,
+    TsTypeAliasDecl, TsTypeParam, TsTypeQuery, TsTypeRef,
 };
 use swc_ecma_visit::Node;
 
@@ -52,7 +52,6 @@ pub struct Scope {
     pub(crate) parent: Option<ScopeId>,
     pub(crate) bindings: HashSet<JsWord>,
     pub(crate) type_bindings: HashSet<JsWord>,
-    pub(crate) ambiguous_bindings: HashSet<JsWord>,
     pub(crate) references: HashSet<JsWord>,
     pub(crate) type_references: HashSet<JsWord>,
     pub(crate) ambiguous_references: HashSet<JsWord>,
@@ -66,7 +65,6 @@ impl Scope {
             parent,
             bindings: HashSet::new(),
             type_bindings: HashSet::new(),
-            ambiguous_bindings: HashSet::new(),
             references: HashSet::new(),
             type_references: HashSet::new(),
             ambiguous_references: HashSet::new(),
@@ -83,7 +81,8 @@ pub struct ModuleExport {
 
 #[derive(Debug)]
 pub struct ModuleImport {
-    name: ImportName,
+    pub imported_name: ImportName,
+    pub local_binding: Option<JsWord>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -169,11 +168,6 @@ impl ModuleVisitor {
     fn add_type_binding(&mut self, ident: &Ident) {
         let scope = self.current_scope();
         scope.type_bindings.insert(ident.sym.clone());
-    }
-
-    fn add_import_binding(&mut self, ident: &Ident) {
-        let scope = self.current_scope();
-        scope.ambiguous_bindings.insert(ident.sym.clone());
     }
 
     fn mark_used_atom(&mut self, atom: &JsWord) {
@@ -292,7 +286,8 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
                         span: namespace_export.span,
                     },
                     ModuleImport {
-                        name: ImportName::Wildcard,
+                        imported_name: ImportName::Wildcard,
+                        local_binding: None,
                     },
                 )),
                 ExportSpecifier::Default(_default_export) => {
@@ -301,14 +296,21 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
                 }
                 ExportSpecifier::Named(named) => {
                     let name = named.exported.as_ref().unwrap_or(&named.orig).sym.clone();
+
+                    let export_name = match name.as_ref() {
+                        "default" => ExportName::Default,
+                        _ => ExportName::Named(name),
+                    };
+
                     Some((
                         ModuleExport {
-                            name: ExportName::Named(name),
+                            name: export_name,
                             span: named.span,
                             local_name: Some(named.orig.sym.clone()),
                         },
                         ModuleImport {
-                            name: ImportName::Named(named.orig.sym.clone()),
+                            imported_name: ImportName::Named(named.orig.sym.clone()),
+                            local_binding: None,
                         },
                     ))
                 }
@@ -336,14 +338,48 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         self.exports.append(&mut exports);
     }
 
-    fn visit_import_specifier(&mut self, import_specifier: &ImportSpecifier, _parent: &dyn Node) {
-        match import_specifier {
-            ImportSpecifier::Named(ImportNamedSpecifier { local, .. })
-            | ImportSpecifier::Default(ImportDefaultSpecifier { local, .. })
-            | ImportSpecifier::Namespace(ImportStarAsSpecifier { local, .. }) => {
-                self.add_import_binding(local)
+    fn visit_import_decl(&mut self, import_decl: &ImportDecl, _parent: &dyn Node) {
+        let mut new_imports = Vec::new();
+
+        // TODO: Do we ever need to access import_decl.asserts? What does it do and why?
+
+        // TODO: Should we take advantage of import_decl.type_only (import type {} from "foo")?
+        // We treat all imports as ambiguous anyways.
+
+        for specifier in &import_decl.specifiers {
+            match specifier {
+                ImportSpecifier::Named(ImportNamedSpecifier {
+                    local, imported, ..
+                }) => {
+                    let imported = imported.as_ref().unwrap_or(local);
+                    let name = ImportName::Named(imported.sym.clone());
+
+                    new_imports.push(ModuleImport {
+                        imported_name: name,
+                        local_binding: Some(local.sym.clone()),
+                    });
+                }
+                ImportSpecifier::Default(ImportDefaultSpecifier { local, .. }) => {
+                    new_imports.push(ModuleImport {
+                        imported_name: ImportName::Default,
+                        local_binding: Some(local.sym.clone()),
+                    });
+                }
+                ImportSpecifier::Namespace(ImportStarAsSpecifier { local, .. }) => {
+                    new_imports.push(ModuleImport {
+                        imported_name: ImportName::Wildcard,
+                        local_binding: Some(local.sym.clone()),
+                    });
+                }
             }
         }
+
+        let module_imports = self
+            .imports
+            .entry(import_decl.src.value.to_string())
+            .or_insert(Vec::new());
+
+        module_imports.append(&mut new_imports);
     }
 
     fn visit_fn_decl(&mut self, fn_decl: &swc_ecma_ast::FnDecl, _parent: &dyn Node) {

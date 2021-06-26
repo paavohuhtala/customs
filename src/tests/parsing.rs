@@ -7,6 +7,7 @@ pub fn ts_type() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             type_bindings: vec!["Foo"],
             inner: vec![TestScope::default()],
@@ -24,6 +25,7 @@ pub fn ts_interface() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             type_bindings: vec!["Foo"],
             inner: vec![TestScope::default()],
@@ -45,6 +47,7 @@ pub fn type_and_value_of_same_name() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             bindings: vec!["Foo"],
             type_bindings: vec!["Foo"],

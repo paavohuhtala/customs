@@ -13,6 +13,7 @@ pub fn block() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             bindings: vec!["foo"],
             inner: vec![TestScope {
@@ -40,6 +41,7 @@ pub fn function() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             bindings: vec!["outerFunction"],
             inner: vec![TestScope {
@@ -63,6 +65,7 @@ pub fn function_generics() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             bindings: vec!["f"],
             inner: vec![TestScope {
@@ -85,6 +88,7 @@ pub fn interface_generics() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             type_bindings: vec!["Foo"],
             inner: vec![TestScope {
@@ -108,6 +112,7 @@ pub fn type_generics() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             type_bindings: vec!["Foo"],
             inner: vec![TestScope {

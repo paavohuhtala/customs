@@ -11,6 +11,7 @@ pub fn typeof_uses_variable() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             bindings: vec!["foo"],
             type_bindings: vec!["Foo", "Bar"],
@@ -45,6 +46,7 @@ pub fn path() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             bindings: vec!["foo", "bar"],
             inner: vec![TestScope {
@@ -74,6 +76,7 @@ pub fn type_array() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             type_bindings: vec!["Foo", "FooArray"],
             inner: vec![
@@ -101,6 +104,7 @@ pub fn type_parametrised() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             type_bindings: vec!["Bar", "Foo", "FooOfBar"],
             inner: vec![
@@ -132,6 +136,7 @@ pub fn interface_extends() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             type_bindings: vec!["Foo", "Bar"],
             inner: vec![
@@ -158,6 +163,7 @@ pub fn interface_extends_generics() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             type_bindings: vec!["Foo", "Bar"],
             inner: vec![
@@ -189,6 +195,7 @@ pub fn type_generics_constrint() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             type_bindings: vec!["Foo", "Bar"],
             inner: vec![
@@ -216,6 +223,7 @@ pub fn interface_generics_constrint() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             type_bindings: vec!["Foo", "Bar"],
             inner: vec![
@@ -242,6 +250,7 @@ pub fn function_initial() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             bindings: vec!["f"],
             inner: vec![TestScope {
@@ -265,6 +274,7 @@ pub fn function_self_reference() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             bindings: vec!["f"],
             inner: vec![TestScope {
@@ -290,6 +300,7 @@ pub fn mapped_type() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             type_bindings: vec!["Key", "Foo"],
             inner: vec![
@@ -321,6 +332,7 @@ pub fn union_type() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             type_bindings: vec!["Foo", "Bar", "FooOrBar"],
             inner: vec![
@@ -349,6 +361,7 @@ pub fn intersection_type() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             type_bindings: vec!["Foo", "Bar", "FooAndBar"],
             inner: vec![
@@ -375,6 +388,7 @@ pub fn recursive_type() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             type_bindings: vec!["Foo"],
             inner: vec![TestScope {
@@ -397,6 +411,7 @@ pub fn conditional() {
     let spec = TestSpec {
         source,
         exports: vec![],
+        imports: vec![],
         scope: TestScope {
             type_bindings: vec!["ElementOf"],
             inner: vec![TestScope {
