@@ -620,3 +620,85 @@ pub fn as_cast_mapped_type_literal() {
 
     run_test(spec);
 }
+
+#[test]
+pub fn assignment() {
+    let source = r#"
+        let a = 100;
+        a = 200;
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec![],
+        imports: vec![],
+        scope: TestScope {
+            bindings: vec!["a"],
+            references: vec!["a"],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
+
+#[test]
+pub fn function_signature_in_annotation() {
+    let source = r#"
+        export const f: (y: number) => number = x => x + 1
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec!["f"],
+        imports: vec![],
+        scope: TestScope {
+            bindings: vec!["f"],
+            inner: vec![
+                TestScope {
+                    bindings: vec!["y"],
+                    ..Default::default()
+                },
+                TestScope {
+                    bindings: vec!["x"],
+                    references: vec!["x"],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
+
+#[test]
+pub fn function_signature_in_annotation_typeof() {
+    let source = r#"
+        export const f: (y: number) => typeof y = x => x + 1
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec!["f"],
+        imports: vec![],
+        scope: TestScope {
+            bindings: vec!["f"],
+            inner: vec![
+                TestScope {
+                    bindings: vec!["y"],
+                    references: vec!["y"],
+                    ..Default::default()
+                },
+                TestScope {
+                    bindings: vec!["x"],
+                    references: vec!["x"],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}

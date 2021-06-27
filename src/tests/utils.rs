@@ -10,7 +10,6 @@ use crate::{
 };
 
 use anyhow::Context;
-use itertools::Itertools;
 use swc_atoms::JsWord;
 use swc_ecma_visit::Visit;
 
@@ -175,18 +174,6 @@ pub fn run_test(spec: TestSpec) {
         }
     }
 
-    let scopes_by_id: HashMap<_, _> = visitor
-        .scopes
-        .iter()
-        .map(|scope| (scope.id, scope))
-        .collect();
-
-    let scopes_by_parent: HashMap<ScopeId, Vec<&Scope>> = visitor
-        .scopes
-        .iter()
-        .filter_map(|scope| scope.parent.map(|parent_id| (parent_id, scope)))
-        .into_group_map();
-
     fn assert_vec_set_equal(
         kind_singular: &'static str,
         kind_plural: &'static str,
@@ -215,11 +202,7 @@ pub fn run_test(spec: TestSpec) {
         }
     }
 
-    fn check_scope(
-        test_scope: &TestScope,
-        scope: &Scope,
-        scopes_by_parent: &HashMap<ScopeId, Vec<&Scope>>,
-    ) {
+    fn check_scope(test_scope: &TestScope, scope: &Scope, scopes: &[Scope]) {
         assert_vec_set_equal(
             "binding",
             "bindings",
@@ -256,8 +239,11 @@ pub fn run_test(spec: TestSpec) {
             scope.id,
         );
 
-        let empty_vec = Vec::new();
-        let child_scopes = scopes_by_parent.get(&scope.id).unwrap_or(&empty_vec);
+        let child_scopes = scope
+            .children
+            .iter()
+            .map(|&id| &scopes[id.index()])
+            .collect::<Vec<_>>();
 
         assert_eq!(
             test_scope.inner.len(),
@@ -268,10 +254,10 @@ pub fn run_test(spec: TestSpec) {
         );
 
         for (scope, test_scope) in child_scopes.iter().zip(test_scope.inner.iter()) {
-            check_scope(test_scope, scope, scopes_by_parent);
+            check_scope(test_scope, scope, scopes);
         }
     }
 
-    let root_scope = scopes_by_id.get(&ScopeId::root()).unwrap();
-    check_scope(&spec.scope, root_scope, &scopes_by_parent);
+    let root_scope = &visitor.scopes[0];
+    check_scope(&spec.scope, root_scope, &visitor.scopes);
 }

@@ -153,3 +153,44 @@ pub fn type_generics() {
 
     run_test(spec);
 }
+
+#[test]
+pub fn class() {
+    let source = r#"
+        class Foo {
+            x: number
+
+            constructor(x: number) {
+                this.x = x;
+            }
+
+            getX(): number {
+                return this.x;
+            }
+        }
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec![],
+        imports: vec![],
+        scope: TestScope {
+            bindings: vec!["Foo"],
+            type_bindings: vec!["Foo"],
+            inner: vec![TestScope {
+                inner: vec![
+                    TestScope {
+                        bindings: vec!["x"],
+                        references: vec!["x"],
+                        ..Default::default()
+                    },
+                    TestScope::default(),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}

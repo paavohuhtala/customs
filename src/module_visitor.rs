@@ -9,13 +9,14 @@ use std::{
 use swc_atoms::JsWord;
 use swc_common::Span;
 use swc_ecma_ast::{
-    ArrayPat, ArrowExpr, BindingIdent, BlockStmt, BlockStmtOrExpr, ClassDecl, ClassExpr,
-    DefaultDecl, ExportDecl, ExportDefaultDecl, ExportDefaultExpr, ExportSpecifier, Expr,
-    ExprOrSuper, FnDecl, FnExpr, Function, Ident, ImportDecl, ImportDefaultSpecifier,
-    ImportNamedSpecifier, ImportSpecifier, ImportStarAsSpecifier, MemberExpr, NamedExport,
-    ObjectPatProp, PropName, TsConditionalType, TsEntityName, TsEnumDecl, TsExprWithTypeArgs,
-    TsIndexSignature, TsInterfaceDecl, TsMappedType, TsPropertySignature, TsType, TsTypeAliasDecl,
-    TsTypeParam, TsTypeQuery, TsTypeQueryExpr, TsTypeRef,
+    ArrayPat, ArrowExpr, AssignExpr, BindingIdent, BlockStmt, BlockStmtOrExpr, ClassDecl,
+    ClassExpr, ClassProp, Constructor, DefaultDecl, ExportDecl, ExportDefaultDecl,
+    ExportDefaultExpr, ExportSpecifier, Expr, ExprOrSuper, FnDecl, FnExpr, Function, Ident,
+    ImportDecl, ImportDefaultSpecifier, ImportNamedSpecifier, ImportSpecifier,
+    ImportStarAsSpecifier, MemberExpr, NamedExport, ObjectPatProp, PrivateProp, PropName,
+    TsConditionalType, TsEntityName, TsEnumDecl, TsExprWithTypeArgs, TsFnType, TsIndexSignature,
+    TsInterfaceDecl, TsMappedType, TsPropertySignature, TsType, TsTypeAliasDecl, TsTypeParam,
+    TsTypeQuery, TsTypeQueryExpr, TsTypeRef,
 };
 use swc_ecma_visit::Node;
 
@@ -38,6 +39,10 @@ impl ScopeId {
     pub fn root() -> Self {
         ScopeId(0)
     }
+
+    pub fn index(self) -> usize {
+        self.0
+    }
 }
 
 impl Display for ScopeId {
@@ -50,12 +55,14 @@ impl Display for ScopeId {
 pub struct Scope {
     pub(crate) id: ScopeId,
     pub(crate) kind: ScopeKind,
-    pub(crate) parent: Option<ScopeId>,
     pub(crate) bindings: HashSet<JsWord>,
     pub(crate) type_bindings: HashMap<JsWord, Span>,
     pub(crate) references: HashSet<JsWord>,
     pub(crate) type_references: HashSet<JsWord>,
     pub(crate) ambiguous_references: HashSet<JsWord>,
+
+    pub(crate) parent: Option<ScopeId>,
+    pub(crate) children: Vec<ScopeId>,
 }
 
 impl Scope {
@@ -63,12 +70,14 @@ impl Scope {
         Scope {
             id: ScopeId(id),
             kind,
-            parent,
             bindings: HashSet::new(),
             type_bindings: HashMap::new(),
             references: HashSet::new(),
             type_references: HashSet::new(),
             ambiguous_references: HashSet::new(),
+
+            parent,
+            children: Vec::new(),
         }
     }
 }
@@ -103,6 +112,36 @@ pub struct ModuleVisitor {
 
     in_type: bool,
     export_state: ExportState,
+    in_assign_lhs: bool,
+}
+
+struct ScopeIterator<'a> {
+    scopes: &'a [Scope],
+    stack: Vec<&'a Scope>,
+}
+
+impl<'a> ScopeIterator<'a> {
+    pub fn new(scopes: &'a [Scope], root_scope: &'a Scope) -> Self {
+        ScopeIterator {
+            scopes,
+            stack: vec![root_scope],
+        }
+    }
+}
+
+impl<'a> Iterator for ScopeIterator<'a> {
+    type Item = &'a Scope;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let scope = self.stack.pop()?;
+
+        for child_id in &scope.children {
+            let child = &self.scopes[child_id.0];
+            self.stack.push(child);
+        }
+
+        Some(scope)
+    }
 }
 
 impl ModuleVisitor {
@@ -118,11 +157,16 @@ impl ModuleVisitor {
             export_state: ExportState::Private,
             exports: Vec::new(),
             imports: HashMap::new(),
+            in_assign_lhs: false,
         }
     }
 
     fn enter_scope(&mut self, kind: ScopeKind) {
-        let new_scope = Scope::new(self.scopes.len(), self.scope_stack.last().copied(), kind);
+        let new_id = self.scopes.len();
+        let curent_scope = self.current_scope();
+        curent_scope.children.push(ScopeId(new_id));
+
+        let new_scope = Scope::new(new_id, Some(curent_scope.id), kind);
         self.scope_stack.push(new_scope.id);
         self.scopes.push(new_scope);
     }
@@ -211,6 +255,14 @@ impl ModuleVisitor {
                 kind,
             }),
         }
+    }
+
+    pub fn child_scopes<'a>(&'a self, scope: &'a Scope) -> impl Iterator<Item = &'a Scope> {
+        ScopeIterator::new(&self.scopes, scope)
+    }
+
+    pub fn get_scope(&self, scope_id: ScopeId) -> &Scope {
+        &self.scopes[scope_id.0]
     }
 }
 
@@ -477,6 +529,44 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         self.exit_scope();
     }
 
+    fn visit_class_prop(&mut self, class_prop: &ClassProp, _parent: &dyn Node) {
+        // Do not visit key, because it's not a reference nor a binding (before we add explicit class support)
+
+        if let Some(value) = &class_prop.value {
+            self.visit_expr(value, class_prop);
+        }
+
+        if let Some(type_ann) = &class_prop.type_ann {
+            self.visit_ts_type_ann(type_ann, class_prop);
+        }
+    }
+
+    fn visit_private_prop(&mut self, class_prop: &PrivateProp, _parent: &dyn Node) {
+        // Do not visit key, because it's not a reference nor a binding (before we add explicit class support)
+
+        if let Some(value) = &class_prop.value {
+            self.visit_expr(value, class_prop);
+        }
+
+        if let Some(type_ann) = &class_prop.type_ann {
+            self.visit_ts_type_ann(type_ann, class_prop);
+        }
+    }
+
+    fn visit_constructor(&mut self, constructor: &Constructor, _parent: &dyn Node) {
+        self.enter_scope(ScopeKind::Block);
+
+        self.visit_param_or_ts_param_props(&constructor.params, constructor);
+
+        if let Some(body) = &constructor.body {
+            for statement in &body.stmts {
+                self.visit_stmt(statement, constructor);
+            }
+        }
+
+        self.exit_scope();
+    }
+
     fn visit_ts_interface_decl(&mut self, interface_decl: &TsInterfaceDecl, _parent: &dyn Node) {
         self.register_decl(&interface_decl.id, interface_decl.id.span, ExportKind::Type);
         self.add_type_binding(&interface_decl.id);
@@ -641,6 +731,19 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         self.exit_type();
     }
 
+    fn visit_ts_fn_type(&mut self, ts_fn_type: &TsFnType, _parent: &dyn Node) {
+        self.enter_scope(ScopeKind::Type);
+
+        if let Some(type_params) = &ts_fn_type.type_params {
+            self.visit_ts_type_param_decl(type_params, ts_fn_type);
+        }
+
+        self.visit_ts_fn_params(&ts_fn_type.params, ts_fn_type);
+        self.visit_ts_type_ann(&ts_fn_type.type_ann, ts_fn_type);
+
+        self.exit_scope();
+    }
+
     fn visit_ts_enum_decl(&mut self, ts_enum_decl: &TsEnumDecl, _parent: &dyn Node) {
         self.register_decl(&ts_enum_decl.id, ts_enum_decl.span, ExportKind::Enum);
         self.visit_ts_enum_members(&ts_enum_decl.members, ts_enum_decl);
@@ -653,8 +756,14 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
     }
 
     fn visit_binding_ident(&mut self, ident: &BindingIdent, _parent: &dyn Node) {
-        self.register_decl(&ident.id, ident.id.span, ExportKind::Value);
-        self.add_binding(&ident.id);
+        // Assignments can have a Pat[tern] on the left side, which use binding idents.
+        // Without this little hack assignments cause extraneous bindings.
+        if self.in_assign_lhs {
+            self.mark_used(&ident.id);
+        } else {
+            self.register_decl(&ident.id, ident.id.span, ExportKind::Value);
+            self.add_binding(&ident.id);
+        }
 
         if let Some(type_ann) = &ident.type_ann {
             self.visit_ts_type_ann(type_ann, ident);
@@ -714,5 +823,13 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
             // TODO: Handle non-computed prop?
             // Could be useful for detecting unnecessary default / wildcard imports
         }
+    }
+
+    fn visit_assign_expr(&mut self, assign_expr: &AssignExpr, _parent: &dyn Node) {
+        self.in_assign_lhs = true;
+        self.visit_pat_or_expr(&assign_expr.left, assign_expr);
+        self.in_assign_lhs = false;
+
+        self.visit_expr(&assign_expr.right, assign_expr);
     }
 }

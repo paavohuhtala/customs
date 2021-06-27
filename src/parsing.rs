@@ -12,6 +12,7 @@ use lazy_static::lazy_static;
 use rayon::prelude::*;
 use regex::Regex;
 
+use swc_atoms::JsWord;
 use swc_common::{FileName, FilePathMapping, SourceFile, SourceMap, Span};
 use swc_ecma_parser::StringInput;
 use swc_ecma_visit::Visit;
@@ -130,6 +131,27 @@ pub fn module_from_source_file(
     Ok(module)
 }
 
+fn is_shadowed_export_used(module_visitor: &ModuleVisitor, identifier: &JsWord) -> bool {
+    let root_scope = &module_visitor.scopes[0];
+    let mut stack = vec![root_scope];
+
+    while let Some(scope) = stack.pop() {
+        if scope.bindings.contains(identifier) || scope.type_bindings.contains_key(identifier) {
+            continue;
+        }
+
+        if scope.references.contains(identifier) || scope.type_references.contains(identifier) {
+            return true;
+        }
+
+        for child in &scope.children {
+            stack.push(&module_visitor.get_scope(*child));
+        }
+    }
+
+    false
+}
+
 fn parse_module(root: &Path, file_path: &Path, module_kind: ModuleKind) -> anyhow::Result<Module> {
     let (source_map, module_ast) = module_from_file(file_path, module_kind)?;
 
@@ -153,6 +175,7 @@ fn parse_module(root: &Path, file_path: &Path, module_kind: ModuleKind) -> anyho
                 .bindings
                 .iter()
                 .chain(scope.type_bindings.iter().map(|binding| binding.0))
+                .unique()
         })
         .counts();
 
@@ -173,12 +196,19 @@ fn parse_module(root: &Path, file_path: &Path, module_kind: ModuleKind) -> anyho
         .iter()
         .filter_map(|export| export.local_name.as_ref());
 
-    let (non_shadowed_exports, _shadowed_exports): (Vec<_>, Vec<_>) =
+    let (non_shadowed_exports, shadowed_exports): (Vec<_>, Vec<_>) =
         named_exports.partition(|id| *binding_counts.get(id).unwrap_or(&1) == 1);
 
-    let locally_used_exports = non_shadowed_exports
+    let locally_used_exports_iter = non_shadowed_exports
         .into_iter()
-        .filter(|export| *reference_counts.get(export).unwrap_or(&0) > 0)
+        .filter(|export| *reference_counts.get(export).unwrap_or(&0) > 0);
+
+    let locally_used_shadowed_exports_iter = shadowed_exports
+        .into_iter()
+        .filter(|export| !is_shadowed_export_used(&visitor, &export));
+
+    let locally_used_exports = locally_used_exports_iter
+        .chain(locally_used_shadowed_exports_iter)
         .collect::<HashSet<_>>();
 
     for export in &visitor.exports {
