@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     cell::Cell,
     collections::{HashMap, HashSet},
     fmt::Display,
@@ -10,6 +9,7 @@ use std::{
 
 use anyhow::Context;
 use relative_path::RelativePath;
+use swc_atoms::JsWord;
 
 use crate::config::AnalyzeTarget;
 
@@ -24,40 +24,17 @@ impl Deref for NormalizedModulePath {
     }
 }
 
-#[derive(PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
-pub enum ExportName<'a> {
-    Named(Cow<'a, str>),
+#[derive(PartialEq, Eq, Hash, Debug, PartialOrd, Ord, Clone)]
+pub enum ExportName {
+    Named(JsWord),
     Default,
 }
 
-#[derive(Debug)]
-pub enum OwnedExportName {
-    Named(String),
-    Default,
-}
-
-impl ExportName<'_> {
-    pub fn to_owned(&self) -> OwnedExportName {
-        match self {
-            ExportName::Named(name) => OwnedExportName::Named(name.to_string()),
-            ExportName::Default => OwnedExportName::Default,
-        }
-    }
-}
-
-impl Display for ExportName<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for ExportName {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             ExportName::Named(name) => write!(f, "{}", name),
             ExportName::Default => write!(f, "default"),
-        }
-    }
-}
-impl Display for OwnedExportName {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            OwnedExportName::Named(name) => write!(f, "{}", name),
-            OwnedExportName::Default => write!(f, "default"),
         }
     }
 }
@@ -123,28 +100,28 @@ impl Usage {
 }
 
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
-pub enum Import {
-    Named(String),
+pub enum ImportName {
+    Named(JsWord),
     Default,
     Wildcard,
 }
 
-pub struct Module<'a> {
+pub struct Module {
     pub kind: ModuleKind,
     pub normalized_path: NormalizedModulePath,
-    pub exports: HashMap<ExportName<'a>, Export>,
-    pub imported_modules: HashMap<NormalizedModulePath, Vec<Import>>,
+    pub exports: HashMap<ExportName, Export>,
+    pub imported_modules: HashMap<NormalizedModulePath, Vec<ImportName>>,
     pub imported_packages: HashSet<String>,
     pub source: Arc<PathBuf>,
     is_wildcard_imported: Cell<bool>,
 }
 
-impl<'a> Module<'a> {
+impl Module {
     pub fn new(
         source_path: Arc<PathBuf>,
         normalized_path: NormalizedModulePath,
         kind: ModuleKind,
-    ) -> Module<'a> {
+    ) -> Module {
         Module {
             kind,
             source: source_path,
@@ -164,7 +141,7 @@ impl<'a> Module<'a> {
         self.is_wildcard_imported.set(true)
     }
 
-    pub fn add_export(&mut self, (name, export): (ExportName<'a>, Export)) {
+    pub fn add_export(&mut self, (name, export): (ExportName, Export)) {
         self.exports.insert(name, export);
     }
 }
@@ -186,17 +163,20 @@ impl ModuleKind {
 pub enum ExportKind {
     Type,
     Value,
+    Class,
+    Enum,
     Unknown,
 }
 
 impl ExportKind {
     pub fn matches_analyze_target(self, target: AnalyzeTarget) -> bool {
-        match (self, target) {
-            (_, AnalyzeTarget::All) => true,
-            (ExportKind::Type, AnalyzeTarget::Types) => true,
-            (ExportKind::Value, AnalyzeTarget::Values) => true,
-            _ => false,
-        }
+        matches!(
+            (self, target),
+            (_, AnalyzeTarget::All)
+                | (ExportKind::Class | ExportKind::Enum, _)
+                | (ExportKind::Type, AnalyzeTarget::Types)
+                | (ExportKind::Value, AnalyzeTarget::Values)
+        )
     }
 }
 
@@ -237,20 +217,30 @@ pub fn normalize_module_path(
     Ok(NormalizedModulePath(normalized_path))
 }
 
-pub fn resolve_import_path(
+pub enum NormalizedImportSource {
+    Local(NormalizedModulePath),
+    Global(String),
+}
+
+pub fn resolve_import_source(
     project_root: &Path,
     current_folder: &Path,
     import_source: &str,
-) -> anyhow::Result<NormalizedModulePath> {
+) -> anyhow::Result<NormalizedImportSource> {
+    if !import_source.starts_with('.') {
+        return Ok(NormalizedImportSource::Global(String::from(import_source)));
+    }
+
     let mut absolute_path = RelativePath::new(import_source).to_logical_path(current_folder);
 
     for ext in ["d.ts", "ts", "tsx"] {
         let with_ext = absolute_path.clone().with_extension(ext);
         if with_ext.is_file() {
-            return normalize_module_path(project_root, &with_ext);
+            return normalize_module_path(project_root, &with_ext)
+                .map(NormalizedImportSource::Local);
         }
     }
 
     absolute_path.push("index.ts");
-    normalize_module_path(project_root, &absolute_path)
+    normalize_module_path(project_root, &absolute_path).map(NormalizedImportSource::Local)
 }

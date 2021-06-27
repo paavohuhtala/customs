@@ -173,9 +173,11 @@ dependencies = [
  "serde",
  "serde_json",
  "structopt",
+ "swc_atoms",
  "swc_common",
  "swc_ecma_ast",
  "swc_ecma_parser",
+ "swc_ecma_visit",
 ]
 
 [[package]]

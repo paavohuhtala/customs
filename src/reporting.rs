@@ -18,8 +18,14 @@ pub fn report_unused_exports(
 
     writeln!(stdout, "Unused exports:")?;
 
-    for (name, location) in sorted_exports {
-        writeln!(&mut stdout, "  {} - {}", location, name)?;
+    for (name, location, usage) in sorted_exports {
+        write!(&mut stdout, "  {} - {}", location, name)?;
+
+        if usage.used_locally {
+            write!(&mut stdout, " (used locally)")?;
+        }
+
+        writeln!(&mut stdout)?;
     }
 
     stdout.flush()?;

@@ -48,9 +48,7 @@ pub fn find_and_read_package_json(root: &Path) -> anyhow::Result<Option<PackageJ
     let package_json_path = find_package_json_path(root);
 
     match package_json_path {
-        None => {
-            return Ok(None);
-        }
+        None => Ok(None),
         Some(path) => Ok(Some(read_package_json(&path)?)),
     }
 }

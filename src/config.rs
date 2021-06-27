@@ -1,7 +1,6 @@
 use std::{path::PathBuf, str::FromStr};
 
 use anyhow::anyhow;
-use structopt::StructOpt;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum OutputFormat {
@@ -58,30 +57,9 @@ impl FromStr for AnalyzeTarget {
     }
 }
 
-#[derive(StructOpt)]
-#[structopt(version = "0.1", author = "Paavo Huhtala <paavo.huhtala@gmail.com>")]
-pub struct Opts {
-    target_dir: PathBuf,
-    #[structopt(short, long, default_value = "text", possible_values = OutputFormat::ALL_FORMATS)]
-    format: OutputFormat,
-
-    #[structopt(short, long, default_value = "all", possible_values = AnalyzeTarget::ALL_TARGETS)]
-    analyze: AnalyzeTarget,
-}
-
 pub struct Config {
     pub root: PathBuf,
     pub format: OutputFormat,
 
     pub analyze_target: AnalyzeTarget,
-}
-
-impl Config {
-    pub fn from_opts(opts: Opts) -> Config {
-        Config {
-            root: opts.target_dir,
-            format: opts.format,
-            analyze_target: opts.analyze,
-        }
-    }
 }
