@@ -21,7 +21,7 @@ lazy_static = "1.4.0"
 rayon = "1.5.1"
 regex = "1.5.4"
 relative-path = "1.4.0"
-serde = { version = "1.0", features = ["derive"] }
+serde = { version="1.0", features=["derive"] }
 serde_json = "1.0.64"
 structopt = "0.3.21"
 swc_atoms = "0.2.6"

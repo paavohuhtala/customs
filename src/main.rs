@@ -13,9 +13,10 @@ use structopt::StructOpt;
 #[structopt(version = "0.1", author = "Paavo Huhtala <paavo.huhtala@gmail.com>")]
 struct Opts {
     target_dir: PathBuf,
-    #[structopt(short, long, default_value = "text", possible_values = OutputFormat::ALL_FORMATS)]
-    format: OutputFormat,
 
+    // Disabled since only one foramt is implemented right now
+    //#[structopt(short, long, default_value = "text", possible_values = OutputFormat::ALL_FORMATS)]
+    //format: OutputFormat,
     #[structopt(short, long, default_value = "all", possible_values = AnalyzeTarget::ALL_TARGETS)]
     analyze: AnalyzeTarget,
 }
@@ -24,7 +25,7 @@ impl Opts {
     pub fn into_config(self) -> Config {
         Config {
             root: self.target_dir,
-            format: self.format,
+            format: OutputFormat::Text,
             analyze_target: self.analyze,
         }
     }
