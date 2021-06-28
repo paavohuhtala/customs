@@ -3,9 +3,11 @@ use std::{path::PathBuf, time::Instant};
 use customs_analysis::{
     analysis::{find_unused_dependencies, find_unused_exports, resolve_module_imports},
     config::{AnalyzeTarget, Config, OutputFormat},
-    package_json::find_and_read_package_json,
+    json_config::find_and_read_config,
+    package_json::PackageJson,
     parsing::parse_all_modules,
     reporting::{report_unused_dependencies, report_unused_exports},
+    tsconfig::TsConfig,
 };
 use structopt::StructOpt;
 
@@ -27,14 +29,22 @@ impl Opts {
             root: self.target_dir,
             format: OutputFormat::Text,
             analyze_target: self.analyze,
+            ignored_folders: Vec::new(),
         }
     }
 }
 
 fn main() -> anyhow::Result<()> {
-    let config = Opts::from_args().into_config();
+    let mut config = Opts::from_args().into_config();
 
     let _timer = ScopedTimer::new("Total");
+
+    let tsconfig = find_and_read_config::<TsConfig>(&config.root)?;
+
+    if let Some((path, tsconfig)) = tsconfig {
+        let mut roots = tsconfig.normalized_type_roots(&path);
+        config.ignored_folders.append(&mut roots);
+    }
 
     let modules = {
         let _timer = ScopedTimer::new("Parsing");
@@ -51,10 +61,12 @@ fn main() -> anyhow::Result<()> {
     let unused_dependencies = {
         let _timer = ScopedTimer::new("Unused dependency analysis");
 
-        let package_json = find_and_read_package_json(&config.root)?;
+        let package_json = find_and_read_config::<PackageJson>(&config.root)?;
 
         match package_json {
-            Some(package_json) => Some(find_unused_dependencies(&modules, &package_json, &config)),
+            Some((_, package_json)) => {
+                Some(find_unused_dependencies(&modules, &package_json, &config))
+            }
             None => {
                 println!("WARNING: Failed to find package.json, skipping dependency analysis.");
                 None
