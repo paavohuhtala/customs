@@ -255,9 +255,22 @@ fn parse_module(root: &Path, file_path: &Path, module_kind: ModuleKind) -> anyho
 }
 
 pub fn parse_all_modules(config: &Config) -> HashMap<NormalizedModulePath, Module> {
+    // This is kind of nasty: filter_entry wants a static closure, and this is the easiest way to to do that.
+    // We leak a bit of memory (up to a few hundred bytes), but as long as this function is only ran once per process it's not an issue.
+    // If we _really_ wanted to clean this up we could use a bit of unsafe to "unleak" the vector, based on the assumption
+    // that walker does not hold onto any references after iteration is finished.
+    // Alternatively we could filter after directory walking, but doing it earlier should more efficient.
+    let ignored_folders = config.ignored_folders.clone();
+    let leaked_ignored_folders = &*ignored_folders.leak::<'static>();
+
     let walker = ignore::WalkBuilder::new(&config.root)
         .standard_filters(true)
         .add_custom_ignore_filename(".customsignore")
+        .filter_entry(move |entry| {
+            !leaked_ignored_folders
+                .iter()
+                .any(|root| entry.path().starts_with(root))
+        })
         .build();
 
     walker

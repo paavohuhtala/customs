@@ -62,4 +62,5 @@ pub struct Config {
     pub format: OutputFormat,
 
     pub analyze_target: AnalyzeTarget,
+    pub ignored_folders: Vec<PathBuf>,
 }
