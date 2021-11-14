@@ -10,6 +10,7 @@ use crate::{
 };
 
 use anyhow::Context;
+use pretty_assertions::assert_eq;
 use swc_atoms::JsWord;
 use swc_ecma_visit::Visit;
 
