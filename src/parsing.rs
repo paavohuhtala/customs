@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    ffi::OsStr,
     ops::Deref,
     path::Path,
     rc::Rc,
@@ -82,7 +83,7 @@ pub fn module_from_file(
 ) -> anyhow::Result<(SourceMap, swc_ecma_ast::Module)> {
     let source_map = SourceMap::new(FilePathMapping::empty());
     let source_file = source_map.load_file(file_path)?;
-    let module = module_from_source_file(source_file, module_kind)?;
+    let module = module_from_source_file(&source_file, module_kind)?;
 
     Ok((source_map, module))
 }
@@ -93,13 +94,13 @@ pub fn module_from_source(
 ) -> anyhow::Result<(SourceMap, swc_ecma_ast::Module)> {
     let source_map = SourceMap::new(FilePathMapping::empty());
     let source_file = source_map.new_source_file(FileName::Anon, source);
-    let module = module_from_source_file(source_file, module_kind)?;
+    let module = module_from_source_file(&source_file, module_kind)?;
 
     Ok((source_map, module))
 }
 
 pub fn module_from_source_file(
-    source_file: Rc<SourceFile>,
+    source_file: &Rc<SourceFile>,
     module_kind: ModuleKind,
 ) -> anyhow::Result<swc_ecma_ast::Module> {
     use swc_ecma_parser::{lexer::Lexer, Parser, Syntax, TsConfig};
@@ -291,18 +292,7 @@ pub fn parse_all_modules(config: &Config) -> HashMap<NormalizedModulePath, Modul
                 .file_name()
                 .expect("Surely every file must have a name?");
 
-            // OsStr doesn't support ends_with and extension doesn't work with .d.ts files, so we have to do a hack like this:
-            let file_name = file_name.to_string_lossy();
-
-            let module_kind = if file_name.ends_with(".d.ts") {
-                ModuleKind::DTS
-            } else if file_name.ends_with(".ts") {
-                ModuleKind::TS
-            } else if file_name.ends_with(".tsx") {
-                ModuleKind::TSX
-            } else {
-                return None;
-            };
+            let module_kind = get_module_kind(file_name)?;
 
             match parse_module(&config.root, &file_path, module_kind) {
                 Ok(module) => Some((module.normalized_path.clone(), module)),
@@ -313,4 +303,19 @@ pub fn parse_all_modules(config: &Config) -> HashMap<NormalizedModulePath, Modul
             }
         })
         .collect()
+}
+
+fn get_module_kind(file_name: &OsStr) -> Option<ModuleKind> {
+    // OsStr doesn't support ends_with and extension() doesn't work with .d.ts files, so we have to do a hack like this:
+    let file_name = file_name.to_string_lossy();
+
+    if file_name.ends_with(".d.ts") {
+        Some(ModuleKind::DTS)
+    } else if file_name.ends_with(".ts") {
+        Some(ModuleKind::TS)
+    } else if file_name.ends_with(".tsx") {
+        Some(ModuleKind::TSX)
+    } else {
+        None
+    }
 }

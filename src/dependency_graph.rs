@@ -79,7 +79,7 @@ pub struct Export {
 impl Export {
     pub fn new(kind: ExportKind, visibility: Visibility, location: ModuleSourceAndLine) -> Self {
         Export {
-            usage: Default::default(),
+            usage: Cell::default(),
             kind,
             visibility,
             location,
@@ -94,7 +94,7 @@ pub struct Usage {
 }
 
 impl Usage {
-    pub fn is_used(&self) -> bool {
+    pub fn is_used(self) -> bool {
         self.used_locally || self.used_externally
     }
 }
@@ -129,7 +129,7 @@ impl Module {
             exports: HashMap::new(),
             imported_modules: HashMap::new(),
             imported_packages: HashSet::new(),
-            is_wildcard_imported: Default::default(),
+            is_wildcard_imported: Cell::default(),
         }
     }
 

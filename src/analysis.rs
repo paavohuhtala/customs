@@ -104,17 +104,17 @@ pub fn find_unused_dependencies(
 ) -> Vec<String> {
     let imported_packages = modules
         .values()
-        .flat_map(|module| module.imported_packages.iter().map(|s| s.as_str()))
+        .flat_map(|module| module.imported_packages.iter().map(String::as_str))
         .collect::<HashSet<&str>>();
 
     let installed_dependencies = package_json
         .dependencies
         .keys()
-        .map(|s| s.as_str())
+        .map(String::as_str)
         .collect::<HashSet<&str>>();
 
     installed_dependencies
         .difference(&imported_packages)
-        .map(|item| item.to_string())
+        .map(|item| (*item).to_string())
         .collect()
 }

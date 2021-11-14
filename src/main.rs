@@ -63,14 +63,11 @@ fn main() -> anyhow::Result<()> {
 
         let package_json = find_and_read_config::<PackageJson>(&config.root)?;
 
-        match package_json {
-            Some((_, package_json)) => {
-                Some(find_unused_dependencies(&modules, &package_json, &config))
-            }
-            None => {
-                println!("WARNING: Failed to find package.json, skipping dependency analysis.");
-                None
-            }
+        if let Some((_, package_json)) = package_json {
+            Some(find_unused_dependencies(&modules, &package_json, &config))
+        } else {
+            println!("WARNING: Failed to find package.json, skipping dependency analysis.");
+            None
         }
     };
 
