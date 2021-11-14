@@ -2,7 +2,7 @@
 name = "customs"
 version = "0.1.0"
 authors = ["Paavo Huhtala <paavo.huhtala@gmail.com>"]
-edition = "2018"
+edition = "2021"
 default-run = "customs"
 
 [lib]
