@@ -137,7 +137,7 @@ fn is_shadowed_export_used(module_visitor: &ModuleVisitor, identifier: &JsWord) 
     let mut stack = vec![root_scope];
 
     while let Some(scope) = stack.pop() {
-        if scope.bindings.contains(identifier) || scope.type_bindings.contains_key(identifier) {
+        if scope.bindings.contains_key(identifier) || scope.type_bindings.contains_key(identifier) {
             continue;
         }
 
@@ -165,7 +165,7 @@ fn parse_module(root: &Path, file_path: &Path, module_kind: ModuleKind) -> anyho
 
     let mut module = Module::new(file_path, normalized_path, module_kind);
 
-    let mut visitor = ModuleVisitor::new();
+    let mut visitor = ModuleVisitor::new(module.normalized_path.display().to_string());
     visitor.visit_module(&module_ast, &module_ast);
 
     let binding_counts = visitor
@@ -174,7 +174,7 @@ fn parse_module(root: &Path, file_path: &Path, module_kind: ModuleKind) -> anyho
         .flat_map(|scope| {
             scope
                 .bindings
-                .iter()
+                .keys()
                 .chain(scope.type_bindings.iter().map(|binding| binding.0))
                 .unique()
         })

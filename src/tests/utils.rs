@@ -21,7 +21,7 @@ pub fn parse_and_visit(source: &'static str) -> ModuleVisitor {
     )
     .unwrap();
 
-    let mut visitor = ModuleVisitor::new();
+    let mut visitor = ModuleVisitor::default();
     visitor.visit_module(&module, &module);
     visitor
 }

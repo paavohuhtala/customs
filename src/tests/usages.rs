@@ -743,7 +743,10 @@ pub fn class_implements() {
             bindings: vec!["Foo"],
             type_references: vec!["A"],
             inner: vec![
-                TestScope::default(),
+                TestScope {
+                    inner: vec![TestScope::default()],
+                    ..Default::default()
+                },
                 TestScope {
                     inner: vec![TestScope {
                         references: vec!["b"],

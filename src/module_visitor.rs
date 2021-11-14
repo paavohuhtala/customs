@@ -10,13 +10,14 @@ use swc_atoms::JsWord;
 use swc_common::Span;
 use swc_ecma_ast::{
     ArrayPat, ArrowExpr, AssignExpr, BindingIdent, BlockStmt, BlockStmtOrExpr, ClassDecl,
-    ClassExpr, ClassMember, ClassProp, Constructor, DefaultDecl, ExportDecl, ExportDefaultDecl,
-    ExportDefaultExpr, ExportSpecifier, Expr, ExprOrSuper, FnDecl, FnExpr, Function, Ident,
-    ImportDecl, ImportDefaultSpecifier, ImportNamedSpecifier, ImportSpecifier,
-    ImportStarAsSpecifier, MemberExpr, NamedExport, ObjectPatProp, PrivateProp, PropName,
-    TsConditionalType, TsEntityName, TsEnumDecl, TsEnumMember, TsExprWithTypeArgs, TsFnType,
-    TsIndexSignature, TsInterfaceDecl, TsMappedType, TsMethodSignature, TsPropertySignature,
-    TsType, TsTypeAliasDecl, TsTypeParam, TsTypeQuery, TsTypeQueryExpr, TsTypeRef,
+    ClassExpr, ClassMember, ClassProp, Constructor, DefaultDecl, DoWhileStmt, ExportDecl,
+    ExportDefaultDecl, ExportDefaultExpr, ExportSpecifier, Expr, ExprOrSuper, FnDecl, FnExpr,
+    ForInStmt, ForOfStmt, ForStmt, Function, Ident, ImportDecl, ImportDefaultSpecifier,
+    ImportNamedSpecifier, ImportSpecifier, ImportStarAsSpecifier, MemberExpr, NamedExport,
+    ObjectPatProp, PrivateProp, PropName, TsConditionalType, TsEntityName, TsEnumDecl,
+    TsEnumMember, TsExprWithTypeArgs, TsFnType, TsIndexSignature, TsInterfaceDecl, TsMappedType,
+    TsMethodSignature, TsPropertySignature, TsType, TsTypeAliasDecl, TsTypeParam, TsTypeQuery,
+    TsTypeQueryExpr, TsTypeRef, WhileStmt,
 };
 use swc_ecma_visit::Node;
 
@@ -51,11 +52,45 @@ impl Display for ScopeId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BindingKind {
+    Value,
+    Function,
+    TsFunctionOverload,
+}
+
+#[derive(Debug, Clone)]
+pub struct Binding {
+    name: JsWord,
+    span: Span,
+    kind: BindingKind,
+}
+
+impl Binding {
+    fn new(ident: &Ident, kind: BindingKind) -> Self {
+        Binding {
+            name: ident.sym.clone(),
+            span: ident.span,
+            kind,
+        }
+    }
+
+    fn can_be_shadowed_by(&self, other_kind: BindingKind) -> bool {
+        match (self.kind, other_kind) {
+            (
+                BindingKind::TsFunctionOverload,
+                BindingKind::TsFunctionOverload | BindingKind::Function,
+            ) => true,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Scope {
     pub(crate) id: ScopeId,
     pub(crate) kind: ScopeKind,
-    pub(crate) bindings: HashSet<JsWord>,
+    pub(crate) bindings: HashMap<JsWord, Binding>,
     pub(crate) type_bindings: HashMap<JsWord, Span>,
     pub(crate) references: HashSet<JsWord>,
     pub(crate) type_references: HashSet<JsWord>,
@@ -70,7 +105,7 @@ impl Scope {
         Scope {
             id: ScopeId(id),
             kind,
-            bindings: HashSet::new(),
+            bindings: HashMap::new(),
             type_bindings: HashMap::new(),
             references: HashSet::new(),
             type_references: HashSet::new(),
@@ -104,6 +139,8 @@ pub enum ExportState {
 
 #[derive(Debug)]
 pub struct ModuleVisitor {
+    name: String,
+
     pub(crate) scope_stack: Vec<ScopeId>,
     pub(crate) scopes: Vec<Scope>,
 
@@ -145,12 +182,13 @@ impl<'a> Iterator for ScopeIterator<'a> {
 }
 
 impl ModuleVisitor {
-    pub fn new() -> Self {
+    pub fn new(name: impl Into<String>) -> Self {
         let root_scope = Scope::new(0, None, ScopeKind::Root);
         let scope_stack = vec![root_scope.id];
         let scopes = vec![root_scope];
 
         ModuleVisitor {
+            name: name.into(),
             scope_stack,
             scopes,
             in_type: false,
@@ -196,18 +234,39 @@ impl ModuleVisitor {
     }
 
     fn current_scope(&mut self) -> &mut Scope {
+        self.current_scope_and_name_hack().0
+    }
+
+    // borrow checker hates me :(
+    fn current_scope_and_name_hack(&mut self) -> (&mut Scope, &str) {
+        let name = self.name.as_str();
+
         let scope_id = self
             .scope_stack
             .last()
             .expect("Scope stack should always contain at least one element");
 
-        &mut self.scopes[scope_id.0]
+        (&mut self.scopes[scope_id.0], name)
     }
 
-    fn add_binding(&mut self, ident: &Ident) {
-        let scope = self.current_scope();
-        let is_new = scope.bindings.insert(ident.sym.clone());
-        debug_assert!(is_new, "Expected {} not to be redeclared", ident.sym);
+    fn add_binding(&mut self, ident: &Ident, kind: BindingKind) {
+        let (scope, name) = self.current_scope_and_name_hack();
+
+        let entry = scope.bindings.entry(ident.sym.clone());
+
+        entry
+            .and_modify(|old_binding| {
+                if old_binding.can_be_shadowed_by(kind) {
+                    old_binding.span = old_binding.span.until(ident.span);
+                    old_binding.kind = kind;
+                } else {
+                    panic!(
+                        "Expected {} not to be redeclared ({}:{:?})",
+                        ident.sym, name, &ident.span
+                    );
+                }
+            })
+            .or_insert_with(|| Binding::new(ident, kind));
     }
 
     fn add_type_binding(&mut self, ident: &Ident) {
@@ -274,7 +333,7 @@ impl ModuleVisitor {
 
 impl Default for ModuleVisitor {
     fn default() -> Self {
-        Self::new()
+        Self::new("unknown")
     }
 }
 
@@ -304,7 +363,7 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         match &default_decl.decl {
             DefaultDecl::Class(class) => {
                 if let Some(ident) = &class.ident {
-                    self.add_binding(ident);
+                    self.add_binding(ident, BindingKind::Value);
                     self.add_type_binding(ident);
                 }
 
@@ -312,7 +371,7 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
             }
             DefaultDecl::Fn(fn_expr) => {
                 if let Some(ident) = &fn_expr.ident {
-                    self.add_binding(ident);
+                    self.add_binding(ident, BindingKind::Function);
                 }
 
                 self.visit_fn_expr(fn_expr, default_decl);
@@ -457,9 +516,17 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
     }
 
     fn visit_fn_decl(&mut self, fn_decl: &FnDecl, _parent: &dyn Node) {
-        self.register_decl(&fn_decl.ident, fn_decl.function.span, ExportKind::Value);
+        let kind = if fn_decl.function.body.is_some() {
+            BindingKind::Function
+        } else {
+            BindingKind::TsFunctionOverload
+        };
 
-        self.add_binding(&fn_decl.ident);
+        if kind != BindingKind::TsFunctionOverload {
+            self.register_decl(&fn_decl.ident, fn_decl.function.span, ExportKind::Value);
+        }
+
+        self.add_binding(&fn_decl.ident, kind);
 
         self.visit_function(&fn_decl.function, fn_decl);
     }
@@ -523,7 +590,7 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
     fn visit_class_decl(&mut self, class_decl: &ClassDecl, _parent: &dyn Node) {
         self.register_decl(&class_decl.ident, class_decl.ident.span, ExportKind::Class);
 
-        self.add_binding(&class_decl.ident);
+        self.add_binding(&class_decl.ident, BindingKind::Value);
         self.add_type_binding(&class_decl.ident);
 
         self.visit_class(&class_decl.class, class_decl);
@@ -760,7 +827,7 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
 
     fn visit_ts_enum_decl(&mut self, ts_enum_decl: &TsEnumDecl, _parent: &dyn Node) {
         self.register_decl(&ts_enum_decl.id, ts_enum_decl.span, ExportKind::Enum);
-        self.add_binding(&ts_enum_decl.id);
+        self.add_binding(&ts_enum_decl.id, BindingKind::Value);
         self.add_type_binding(&ts_enum_decl.id);
 
         self.enter_scope(ScopeKind::Type);
@@ -781,7 +848,10 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         );
 
         self.visit_opt_ts_type_ann(ts_method_signature.type_ann.as_ref(), ts_method_signature);
+
+        self.enter_scope(ScopeKind::Type);
         self.visit_ts_fn_params(&ts_method_signature.params, ts_method_signature);
+        self.exit_scope();
     }
 
     fn visit_ts_enum_members(&mut self, ts_enum_members: &[TsEnumMember], _parent: &dyn Node) {
@@ -805,7 +875,7 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
             self.mark_used(&ident.id);
         } else {
             self.register_decl(&ident.id, ident.id.span, ExportKind::Value);
-            self.add_binding(&ident.id);
+            self.add_binding(&ident.id, BindingKind::Value);
         }
 
         if let Some(type_ann) = &ident.type_ann {
@@ -836,7 +906,7 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
             }
             ObjectPatProp::Assign(assign) => {
                 self.register_decl(&assign.key, assign.span, ExportKind::Value);
-                self.add_binding(&assign.key);
+                self.add_binding(&assign.key, BindingKind::Value);
 
                 if let Some(expr) = &assign.value {
                     self.visit_expr(expr, assign);
@@ -874,5 +944,35 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         self.in_assign_lhs = false;
 
         self.visit_expr(&assign_expr.right, assign_expr);
+    }
+
+    fn visit_for_in_stmt(&mut self, for_in_statement: &ForInStmt, parent: &dyn Node) {
+        self.enter_scope(ScopeKind::Block);
+        swc_ecma_visit::visit_for_in_stmt(self, for_in_statement, parent);
+        self.exit_scope();
+    }
+
+    fn visit_for_of_stmt(&mut self, for_of_statement: &ForOfStmt, parent: &dyn Node) {
+        self.enter_scope(ScopeKind::Block);
+        swc_ecma_visit::visit_for_of_stmt(self, for_of_statement, parent);
+        self.exit_scope();
+    }
+
+    fn visit_for_stmt(&mut self, for_statement: &ForStmt, parent: &dyn Node) {
+        self.enter_scope(ScopeKind::Block);
+        swc_ecma_visit::visit_for_stmt(self, for_statement, parent);
+        self.exit_scope();
+    }
+
+    fn visit_while_stmt(&mut self, while_statement: &WhileStmt, parent: &dyn Node) {
+        self.enter_scope(ScopeKind::Block);
+        swc_ecma_visit::visit_while_stmt(self, while_statement, parent);
+        self.exit_scope();
+    }
+
+    fn visit_do_while_stmt(&mut self, do_while_statement: &DoWhileStmt, parent: &dyn Node) {
+        self.enter_scope(ScopeKind::Block);
+        swc_ecma_visit::visit_do_while_stmt(self, do_while_statement, parent);
+        self.exit_scope();
     }
 }

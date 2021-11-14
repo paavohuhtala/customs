@@ -219,3 +219,86 @@ pub fn ts_enum() {
 
     run_test(spec);
 }
+
+#[test]
+pub fn loops_in_closures() {
+    let source = r#"
+        it("does thing", () => {
+            const x = "shadowed"
+            for (const x of l1) { }
+        })
+
+        it("does something else", () => {
+            const x = "shadowed"
+            for (const x of l2) { }
+        })
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec![],
+        imports: vec![],
+        scope: TestScope {
+            references: vec!["it"],
+            inner: vec![
+                TestScope {
+                    bindings: vec!["x"],
+                    inner: vec![TestScope {
+                        references: vec!["l1"],
+                        bindings: vec!["x"],
+                        inner: vec![TestScope::default()],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                TestScope {
+                    bindings: vec!["x"],
+                    inner: vec![TestScope {
+                        references: vec!["l2"],
+                        bindings: vec!["x"],
+                        inner: vec![TestScope::default()],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
+
+#[test]
+pub fn ts_overloads() {
+    let source = r#"
+        export function foo()
+        export function foo(x: string)
+        export function foo(x?: any) { }
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec!["foo"],
+        imports: vec![],
+        scope: TestScope {
+            bindings: vec!["foo"],
+            inner: vec![
+                TestScope::default(),
+                TestScope {
+                    bindings: vec!["x"],
+                    ..Default::default()
+                },
+                TestScope {
+                    bindings: vec!["x"],
+                    ..Default::default()
+                },
+            ],
+
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}

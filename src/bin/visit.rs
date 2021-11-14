@@ -22,7 +22,7 @@ fn main() -> anyhow::Result<()> {
 
     println!("{:#?}", module);
 
-    let mut analyzer = ModuleVisitor::new();
+    let mut analyzer = ModuleVisitor::new("unknown");
     analyzer.visit_module(&module, &module);
 
     println!("{:#?}", analyzer);
