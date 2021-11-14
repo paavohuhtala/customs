@@ -194,3 +194,28 @@ pub fn class() {
 
     run_test(spec);
 }
+
+#[test]
+pub fn ts_enum() {
+    let source = r#"
+        export enum Foo { A, B, C = getBar() }
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec!["Foo"],
+        imports: vec![],
+        scope: TestScope {
+            bindings: vec!["Foo"],
+            type_bindings: vec!["Foo"],
+            inner: vec![TestScope {
+                references: vec!["getBar"],
+                ..Default::default()
+            }],
+
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}

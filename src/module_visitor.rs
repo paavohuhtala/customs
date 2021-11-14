@@ -14,9 +14,9 @@ use swc_ecma_ast::{
     ExportDefaultExpr, ExportSpecifier, Expr, ExprOrSuper, FnDecl, FnExpr, Function, Ident,
     ImportDecl, ImportDefaultSpecifier, ImportNamedSpecifier, ImportSpecifier,
     ImportStarAsSpecifier, MemberExpr, NamedExport, ObjectPatProp, PrivateProp, PropName,
-    TsConditionalType, TsEntityName, TsEnumDecl, TsExprWithTypeArgs, TsFnType, TsIndexSignature,
-    TsInterfaceDecl, TsMappedType, TsPropertySignature, TsType, TsTypeAliasDecl, TsTypeParam,
-    TsTypeQuery, TsTypeQueryExpr, TsTypeRef,
+    TsConditionalType, TsEntityName, TsEnumDecl, TsEnumMember, TsExprWithTypeArgs, TsFnType,
+    TsIndexSignature, TsInterfaceDecl, TsMappedType, TsPropertySignature, TsType, TsTypeAliasDecl,
+    TsTypeParam, TsTypeQuery, TsTypeQueryExpr, TsTypeRef,
 };
 use swc_ecma_visit::Node;
 
@@ -206,12 +206,18 @@ impl ModuleVisitor {
 
     fn add_binding(&mut self, ident: &Ident) {
         let scope = self.current_scope();
-        scope.bindings.insert(ident.sym.clone());
+        let is_new = scope.bindings.insert(ident.sym.clone());
+        debug_assert!(is_new, "Expected {} not to be redeclared", ident.sym);
     }
 
     fn add_type_binding(&mut self, ident: &Ident) {
         let scope = self.current_scope();
-        scope.type_bindings.insert(ident.sym.clone(), ident.span);
+        let was_in = scope.type_bindings.insert(ident.sym.clone(), ident.span);
+        debug_assert!(
+            was_in.is_none(),
+            "Expected {} not to be redeclared",
+            ident.sym
+        );
     }
 
     fn mark_used_atom(&mut self, atom: &JsWord) {
@@ -295,26 +301,22 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
             kind,
         });
 
-        if let Some(local_ident) = local_ident {
-            match default_decl.decl {
-                DefaultDecl::Fn(_) => {
-                    self.add_binding(local_ident);
-                }
-                DefaultDecl::TsInterfaceDecl(_) => {
-                    self.add_type_binding(local_ident);
-                }
-                DefaultDecl::Class(_) => {
-                    self.add_binding(local_ident);
-                    self.add_type_binding(local_ident);
-                }
-            }
-        }
-
         match &default_decl.decl {
             DefaultDecl::Class(class) => {
+                if let Some(ident) = &class.ident {
+                    self.add_binding(ident);
+                    self.add_type_binding(ident);
+                }
+
                 self.visit_class_expr(class, default_decl);
             }
-            DefaultDecl::Fn(fn_expr) => self.visit_fn_expr(fn_expr, default_decl),
+            DefaultDecl::Fn(fn_expr) => {
+                if let Some(ident) = &fn_expr.ident {
+                    self.add_binding(ident);
+                }
+
+                self.visit_fn_expr(fn_expr, default_decl);
+            }
             DefaultDecl::TsInterfaceDecl(ts_interface) => {
                 self.visit_ts_interface_decl(ts_interface, default_decl);
             }
@@ -746,7 +748,22 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
 
     fn visit_ts_enum_decl(&mut self, ts_enum_decl: &TsEnumDecl, _parent: &dyn Node) {
         self.register_decl(&ts_enum_decl.id, ts_enum_decl.span, ExportKind::Enum);
+        self.add_binding(&ts_enum_decl.id);
+        self.add_type_binding(&ts_enum_decl.id);
+
+        self.enter_scope(ScopeKind::Type);
+
         self.visit_ts_enum_members(&ts_enum_decl.members, ts_enum_decl);
+
+        self.exit_scope();
+    }
+
+    fn visit_ts_enum_members(&mut self, ts_enum_members: &[TsEnumMember], _parent: &dyn Node) {
+        for member in ts_enum_members {
+            if let Some(init) = &member.init {
+                self.visit_expr(init, member);
+            }
+        }
     }
 
     fn visit_block_stmt(&mut self, block: &BlockStmt, _parent: &dyn Node) {

@@ -40,9 +40,9 @@ pub fn ts_interface() {
 #[test]
 pub fn type_and_value_of_same_name() {
     let source = r#"
-            interface Foo { bar: number }
-            const Foo = 123
-        "#;
+        interface Foo { bar: number }
+        const Foo = 123
+    "#;
 
     let spec = TestSpec {
         source,
