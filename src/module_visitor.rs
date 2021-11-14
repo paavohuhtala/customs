@@ -345,20 +345,23 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
     }
 
     fn visit_export_default_decl(&mut self, default_decl: &ExportDefaultDecl, _parent: &dyn Node) {
-        let (local_ident, kind) = match &default_decl.decl {
-            DefaultDecl::Class(ClassExpr { ident, .. }) => (ident.as_ref(), ExportKind::Class),
-            DefaultDecl::Fn(FnExpr { ident, .. }) => (ident.as_ref(), ExportKind::Value),
-            DefaultDecl::TsInterfaceDecl(TsInterfaceDecl { id: ident, .. }) => {
-                (Some(ident), ExportKind::Type)
-            }
-        };
+        // This is always true... except in TS declare module blocks
+        if self.in_root_scope() {
+            let (local_ident, kind) = match &default_decl.decl {
+                DefaultDecl::Class(ClassExpr { ident, .. }) => (ident.as_ref(), ExportKind::Class),
+                DefaultDecl::Fn(FnExpr { ident, .. }) => (ident.as_ref(), ExportKind::Value),
+                DefaultDecl::TsInterfaceDecl(TsInterfaceDecl { id: ident, .. }) => {
+                    (Some(ident), ExportKind::Type)
+                }
+            };
 
-        self.exports.push(ModuleExport {
-            name: ExportName::Default,
-            span: default_decl.span,
-            local_name: local_ident.map(|ident| ident.sym.clone()),
-            kind,
-        });
+            self.exports.push(ModuleExport {
+                name: ExportName::Default,
+                span: default_decl.span,
+                local_name: local_ident.map(|ident| ident.sym.clone()),
+                kind,
+            });
+        }
 
         match &default_decl.decl {
             DefaultDecl::Class(class) => {
@@ -387,12 +390,14 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         export_default_expr: &ExportDefaultExpr,
         _parent: &dyn Node,
     ) {
-        self.exports.push(ModuleExport {
-            name: ExportName::Default,
-            local_name: None,
-            span: export_default_expr.span,
-            kind: ExportKind::Unknown,
-        });
+        if self.in_root_scope() {
+            self.exports.push(ModuleExport {
+                name: ExportName::Default,
+                local_name: None,
+                span: export_default_expr.span,
+                kind: ExportKind::Unknown,
+            });
+        }
 
         match &*export_default_expr.expr {
             Expr::Ident(ident) => self.mark_ambiguous_used(&ident),
@@ -973,6 +978,12 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
     fn visit_do_while_stmt(&mut self, do_while_statement: &DoWhileStmt, parent: &dyn Node) {
         self.enter_scope(ScopeKind::Block);
         swc_ecma_visit::visit_do_while_stmt(self, do_while_statement, parent);
+        self.exit_scope();
+    }
+
+    fn visit_ts_module_decl(&mut self, n: &swc_ecma_ast::TsModuleDecl, parent: &dyn Node) {
+        self.enter_scope(ScopeKind::Block);
+        swc_ecma_visit::visit_ts_module_decl(self, n, parent);
         self.exit_scope();
     }
 }

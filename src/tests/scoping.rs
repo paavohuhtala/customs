@@ -302,3 +302,54 @@ pub fn ts_overloads() {
 
     run_test(spec);
 }
+
+#[test]
+pub fn ts_declare_module() {
+    let source = r#"
+        declare module "*.svg" {
+            import { SvgProps } from "react-native-svg";
+            const content: React.FC<SvgProps>;
+            export default content;
+        }
+        
+        declare module "*.png" {
+            import { ImageSourcePropType } from "react-native";
+            const content: ImageSourcePropType;
+            export default content;
+        }
+    "#;
+
+    // TODO: This misses the reference to React.FC
+    let spec = TestSpec {
+        source,
+        exports: vec![],
+        imports: vec![
+            ("react-native-svg", vec![("SvgProps", Some("SvgProps"))]),
+            (
+                "react-native",
+                vec![("ImageSourcePropType", Some("ImageSourcePropType"))],
+            ),
+        ],
+        scope: TestScope {
+            bindings: vec![],
+            inner: vec![
+                TestScope {
+                    bindings: vec!["content"],
+                    type_references: vec!["SvgProps"],
+                    ambiguous_references: vec!["content"],
+                    ..Default::default()
+                },
+                TestScope {
+                    bindings: vec!["content"],
+                    type_references: vec!["ImageSourcePropType"],
+                    ambiguous_references: vec!["content"],
+                    ..Default::default()
+                },
+            ],
+
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
