@@ -10,13 +10,13 @@ use swc_atoms::JsWord;
 use swc_common::Span;
 use swc_ecma_ast::{
     ArrayPat, ArrowExpr, AssignExpr, BindingIdent, BlockStmt, BlockStmtOrExpr, ClassDecl,
-    ClassExpr, ClassProp, Constructor, DefaultDecl, ExportDecl, ExportDefaultDecl,
+    ClassExpr, ClassMember, ClassProp, Constructor, DefaultDecl, ExportDecl, ExportDefaultDecl,
     ExportDefaultExpr, ExportSpecifier, Expr, ExprOrSuper, FnDecl, FnExpr, Function, Ident,
     ImportDecl, ImportDefaultSpecifier, ImportNamedSpecifier, ImportSpecifier,
     ImportStarAsSpecifier, MemberExpr, NamedExport, ObjectPatProp, PrivateProp, PropName,
     TsConditionalType, TsEntityName, TsEnumDecl, TsEnumMember, TsExprWithTypeArgs, TsFnType,
-    TsIndexSignature, TsInterfaceDecl, TsMappedType, TsPropertySignature, TsType, TsTypeAliasDecl,
-    TsTypeParam, TsTypeQuery, TsTypeQueryExpr, TsTypeRef,
+    TsIndexSignature, TsInterfaceDecl, TsMappedType, TsMethodSignature, TsPropertySignature,
+    TsType, TsTypeAliasDecl, TsTypeParam, TsTypeQuery, TsTypeQueryExpr, TsTypeRef,
 };
 use swc_ecma_visit::Node;
 
@@ -361,7 +361,7 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
                 )),
                 ExportSpecifier::Default(_default_export) => {
                     // Do nothing. As far as I can tell this form is not valid ES - why does it exist in SWC's AST?
-                    None
+                    unreachable!("Named default exports should be impossible");
                 }
                 ExportSpecifier::Named(named) => {
                     let name = named.exported.as_ref().unwrap_or(&named.orig).sym.clone();
@@ -387,7 +387,7 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
             })
             .unzip();
 
-        // TODO - this technically allows show invalid forms? You can't re-export * without specifying a source
+        // TODO - this technically allows invalid forms? You can't re-export * without specifying a source
         if let Some(source) = &named_export.src {
             let imports_for_module = self
                 .imports
@@ -526,13 +526,25 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         self.add_binding(&class_decl.ident);
         self.add_type_binding(&class_decl.ident);
 
-        self.enter_scope(ScopeKind::Type);
         self.visit_class(&class_decl.class, class_decl);
+    }
+
+    fn visit_class_members(&mut self, class_members: &[ClassMember], parent: &dyn Node) {
+        self.enter_scope(ScopeKind::Type);
+        for class_member in class_members {
+            self.visit_class_member(class_member, parent);
+        }
         self.exit_scope();
     }
 
+    fn visit_class_expr(&mut self, class_expr: &ClassExpr, _parent: &dyn Node) {
+        // Do not visit the name
+
+        self.visit_class(&class_expr.class, class_expr);
+    }
+
     fn visit_class_prop(&mut self, class_prop: &ClassProp, _parent: &dyn Node) {
-        // Do not visit key, because it's not a reference nor a binding (before we add explicit class support)
+        // Do not visit key, because it's not a reference nor a binding
 
         if let Some(value) = &class_prop.value {
             self.visit_expr(value, class_prop);
@@ -544,7 +556,7 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
     }
 
     fn visit_private_prop(&mut self, class_prop: &PrivateProp, _parent: &dyn Node) {
-        // Do not visit key, because it's not a reference nor a binding (before we add explicit class support)
+        // Do not visit key, because it's not a reference nor a binding
 
         if let Some(value) = &class_prop.value {
             self.visit_expr(value, class_prop);
@@ -756,6 +768,20 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         self.visit_ts_enum_members(&ts_enum_decl.members, ts_enum_decl);
 
         self.exit_scope();
+    }
+
+    fn visit_ts_method_signature(
+        &mut self,
+        ts_method_signature: &TsMethodSignature,
+        _parent: &dyn Node,
+    ) {
+        self.visit_opt_ts_type_param_decl(
+            ts_method_signature.type_params.as_ref(),
+            ts_method_signature,
+        );
+
+        self.visit_opt_ts_type_ann(ts_method_signature.type_ann.as_ref(), ts_method_signature);
+        self.visit_ts_fn_params(&ts_method_signature.params, ts_method_signature);
     }
 
     fn visit_ts_enum_members(&mut self, ts_enum_members: &[TsEnumMember], _parent: &dyn Node) {

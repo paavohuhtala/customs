@@ -207,6 +207,46 @@ pub fn default_interface() {
 }
 
 #[test]
+pub fn default_class() {
+    let source = r#"
+        export default class Foo { a: string = "a" }
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec!["default"],
+        imports: vec![],
+        scope: TestScope {
+            bindings: vec!["Foo"],
+            type_bindings: vec!["Foo"],
+            inner: vec![TestScope::default()],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
+
+#[test]
+pub fn default_unnamed_class() {
+    let source = r#"
+        export default class { a: string = "a" }
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec!["default"],
+        imports: vec![],
+        scope: TestScope {
+            inner: vec![TestScope::default()],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
+
+#[test]
 pub fn default_statement_const() {
     let source = r#"
         const foo = "bar"

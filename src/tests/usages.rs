@@ -702,3 +702,59 @@ pub fn function_signature_in_annotation_typeof() {
 
     run_test(spec);
 }
+
+#[test]
+pub fn class_inheritance() {
+    let source = r#"
+        class A extends B { }
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec![],
+        imports: vec![],
+        scope: TestScope {
+            bindings: vec!["A"],
+            type_bindings: vec!["A"],
+            references: vec!["B"],
+            inner: vec![TestScope::default()],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
+
+#[test]
+pub fn class_implements() {
+    let source = r#"
+        interface A { foo(): string }
+        export default class Foo implements A {
+            foo = () => b
+        }
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec!["default"],
+        imports: vec![],
+        scope: TestScope {
+            type_bindings: vec!["A", "Foo"],
+            bindings: vec!["Foo"],
+            type_references: vec!["A"],
+            inner: vec![
+                TestScope::default(),
+                TestScope {
+                    inner: vec![TestScope {
+                        references: vec!["b"],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}
