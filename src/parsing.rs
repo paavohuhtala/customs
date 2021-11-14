@@ -118,7 +118,7 @@ pub fn module_from_source_file(
 
     let lexer = Lexer::new(
         Syntax::Typescript(tsconfig),
-        swc_ecma_parser::JscTarget::Es2020,
+        swc_ecma_ast::EsVersion::Es2020,
         input,
         None,
     );
