@@ -1,6 +1,7 @@
 use std::{
     borrow::Borrow,
     collections::{HashMap, HashSet},
+    path::PathBuf,
 };
 
 use crate::{
@@ -14,14 +15,16 @@ use pretty_assertions::assert_eq;
 use swc_atoms::JsWord;
 use swc_ecma_visit::Visit;
 
-pub fn parse_and_visit(source: &'static str) -> ModuleVisitor {
-    let (_, module) = module_from_source(
+pub fn parse_and_visit(virtual_path: &'static str, source: &'static str) -> ModuleVisitor {
+    let (source_map, module) = module_from_source(
         String::from(source),
         crate::dependency_graph::ModuleKind::TS,
     )
     .unwrap();
 
-    let mut visitor = ModuleVisitor::default();
+    // println!("{:#?}", module);
+
+    let mut visitor = ModuleVisitor::new(PathBuf::from(virtual_path), source_map);
     visitor.visit_module(&module, &module);
     visitor
 }
@@ -96,7 +99,7 @@ pub struct TestSpec {
 }
 
 pub fn run_test(spec: TestSpec) {
-    let visitor = parse_and_visit(spec.source);
+    let visitor = parse_and_visit("unknown.ts", spec.source);
 
     println!("{:#?}", visitor);
 

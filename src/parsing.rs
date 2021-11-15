@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     ffi::OsStr,
     ops::Deref,
-    path::Path,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
 };
@@ -14,7 +14,7 @@ use rayon::prelude::*;
 use regex::Regex;
 
 use swc_atoms::JsWord;
-use swc_common::{FileName, FilePathMapping, SourceFile, SourceMap, Span};
+use swc_common::{FileName, FilePathMapping, SourceFile, SourceMap};
 use swc_ecma_parser::StringInput;
 use swc_ecma_visit::Visit;
 
@@ -22,22 +22,10 @@ use crate::{
     config::Config,
     dependency_graph::{
         normalize_module_path, resolve_import_source, Export, ExportName, Module, ModuleKind,
-        ModuleSourceAndLine, NormalizedImportSource, NormalizedModulePath, Usage, Visibility,
+        ModulePath, NormalizedImportSource, NormalizedModulePath, Usage, Visibility,
     },
     module_visitor::{ModuleImport, ModuleVisitor},
 };
-
-fn create_export_source(
-    module: &Module,
-    source_map: &SourceMap,
-    span: Span,
-) -> ModuleSourceAndLine {
-    let line = source_map
-        .lookup_line(span.lo())
-        .expect("The offset should always be in bounds")
-        .line;
-    ModuleSourceAndLine::new(module.source.clone(), line)
-}
 
 fn normalize_package_import(import_source: &str) -> Option<String> {
     lazy_static! {
@@ -69,9 +57,7 @@ fn parse_imports(
     let import_names = imports.into_iter().map(|import| import.imported_name);
 
     module
-        .imported_modules
-        .entry(normalized_module_path)
-        .or_insert_with(Vec::new)
+        .imports_mut(normalized_module_path)
         .extend(import_names);
 
     Ok(())
@@ -153,21 +139,33 @@ fn is_shadowed_export_used(module_visitor: &ModuleVisitor, identifier: &JsWord) 
     false
 }
 
-fn parse_module(root: &Path, file_path: &Path, module_kind: ModuleKind) -> anyhow::Result<Module> {
+fn read_and_parse_module(
+    root: Arc<PathBuf>,
+    file_path: &Path,
+    module_kind: ModuleKind,
+) -> anyhow::Result<Module> {
     let (source_map, module_ast) = module_from_file(file_path, module_kind)?;
 
     let normalized_path = normalize_module_path(&root, &file_path)?;
-    let current_folder = file_path
-        .parent()
-        .expect("A file path should always have a parent");
 
     let file_path = Arc::new(file_path.to_path_buf());
 
-    let mut module = Module::new(file_path, normalized_path, module_kind);
+    let module = Module::new(
+        ModulePath {
+            root,
+            root_relative: file_path,
+            normalized: normalized_path,
+        },
+        module_kind,
+    );
 
-    let mut visitor = ModuleVisitor::new(module.normalized_path.display().to_string());
+    let mut visitor = ModuleVisitor::new(module.path.root_relative.clone(), source_map);
     visitor.visit_module(&module_ast, &module_ast);
 
+    analyze_module(module, visitor)
+}
+
+pub fn analyze_module(mut module: Module, visitor: ModuleVisitor) -> anyhow::Result<Module> {
     let binding_counts = visitor
         .scopes
         .iter()
@@ -195,7 +193,8 @@ fn parse_module(root: &Path, file_path: &Path, module_kind: ModuleKind) -> anyho
     let named_exports = visitor
         .exports
         .iter()
-        .filter_map(|export| export.local_name.as_ref());
+        .filter_map(|export| export.local_name.as_ref())
+        .map(|name| name.to_owned());
 
     let (non_shadowed_exports, shadowed_exports): (Vec<_>, Vec<_>) =
         named_exports.partition(|id| *binding_counts.get(id).unwrap_or(&1) == 1);
@@ -212,15 +211,18 @@ fn parse_module(root: &Path, file_path: &Path, module_kind: ModuleKind) -> anyho
         .chain(locally_used_shadowed_exports_iter)
         .collect::<HashSet<_>>();
 
-    for export in &visitor.exports {
-        let export_entry = Export::new(
-            export.kind,
-            Visibility::Exported,
-            create_export_source(&module, &source_map, export.span),
-        );
+    let ModuleVisitor {
+        exports,
+        mut scopes,
+        imports,
+        ..
+    } = visitor;
 
-        if let Some(local_name) = &export.local_name {
-            if locally_used_exports.contains(local_name) {
+    for export in exports {
+        let export_entry = Export::new(export.kind, Visibility::Exported, export.source);
+
+        if let Some(local_name) = export.local_name {
+            if locally_used_exports.contains(&local_name) {
                 export_entry.usage.set(Usage {
                     used_locally: true,
                     used_externally: false,
@@ -228,27 +230,36 @@ fn parse_module(root: &Path, file_path: &Path, module_kind: ModuleKind) -> anyho
             }
         }
 
-        module.add_export((export.name.clone(), export_entry))
+        module.add_export(export.name, export_entry)
     }
 
     // In declaration modules all types defined in the root scope are implicitly exported
-    if module_kind.is_declaration() {
-        let root_scope = &visitor.scopes[0];
-        for (type_binding, span) in &root_scope.type_bindings {
-            let export_name = ExportName::Named(type_binding.clone());
-            module.add_export((
+    if module.kind.is_declaration() {
+        let root_scope = scopes.remove(0);
+
+        for (type_binding_name, type_binding) in root_scope.type_bindings {
+            let export_name = ExportName::Named(type_binding_name);
+            module.add_export(
                 export_name,
                 Export::new(
                     crate::dependency_graph::ExportKind::Type,
                     Visibility::ImplicitlyExported,
-                    create_export_source(&module, &source_map, *span),
+                    type_binding.source,
                 ),
-            ));
+            );
         }
     }
 
-    for (unnormalized_module, imports) in visitor.imports {
-        let source = resolve_import_source(root, current_folder, &unnormalized_module)?;
+    let current_folder = module
+        .path
+        .root_relative
+        .parent()
+        .expect("A file path should always have a parent")
+        .to_owned();
+
+    for (unnormalized_module, imports) in imports {
+        let source =
+            resolve_import_source(&module.path.root, &current_folder, &unnormalized_module)?;
         parse_imports(&mut module, source, imports)?;
     }
 
@@ -264,7 +275,9 @@ pub fn parse_all_modules(config: &Config) -> HashMap<NormalizedModulePath, Modul
     let ignored_folders = config.ignored_folders.clone();
     let leaked_ignored_folders = &*ignored_folders.leak::<'static>();
 
-    let walker = ignore::WalkBuilder::new(&config.root)
+    let root = config.root.as_ref();
+
+    let walker = ignore::WalkBuilder::new(root)
         .standard_filters(true)
         .add_custom_ignore_filename(".customsignore")
         .filter_entry(move |entry| {
@@ -294,8 +307,8 @@ pub fn parse_all_modules(config: &Config) -> HashMap<NormalizedModulePath, Modul
 
             let module_kind = get_module_kind(file_name)?;
 
-            match parse_module(&config.root, &file_path, module_kind) {
-                Ok(module) => Some((module.normalized_path.clone(), module)),
+            match read_and_parse_module(config.root.clone(), &file_path, module_kind) {
+                Ok(module) => Some((module.path.normalized.clone(), module)),
                 Err(err) => {
                     eprintln!("Error while parsing {}: {}", file_path.display(), err);
                     None

@@ -15,14 +15,14 @@ struct Args {
 fn main() -> anyhow::Result<()> {
     let args = Args::from_args();
 
-    let (_, module) = module_from_file(
+    let (source_map, module) = module_from_file(
         &args.target_file,
         customs_analysis::dependency_graph::ModuleKind::TS,
     )?;
 
     println!("{:#?}", module);
 
-    let mut analyzer = ModuleVisitor::new("unknown");
+    let mut analyzer = ModuleVisitor::new(PathBuf::from("unknown"), source_map);
     analyzer.visit_module(&module, &module);
 
     println!("{:#?}", analyzer);

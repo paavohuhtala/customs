@@ -4,10 +4,12 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
+    path::PathBuf,
+    sync::Arc,
 };
 
 use swc_atoms::JsWord;
-use swc_common::Span;
+use swc_common::{SourceMap, Span};
 use swc_ecma_ast::{
     ArrayPat, ArrowExpr, AssignExpr, BindingIdent, BlockStmt, BlockStmtOrExpr, ClassDecl,
     ClassExpr, ClassMember, ClassProp, Constructor, DefaultDecl, DoWhileStmt, ExportDecl,
@@ -23,7 +25,7 @@ use swc_ecma_visit::Node;
 
 use crate::{
     ast_utils::walk_ts_qualified_name,
-    dependency_graph::{ExportKind, ExportName, ImportName},
+    dependency_graph::{ExportKind, ExportName, ImportName, ModuleSourceAndLine},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,11 +89,16 @@ impl Binding {
 }
 
 #[derive(Debug, Clone)]
+pub struct TypeBinding {
+    pub source: ModuleSourceAndLine,
+}
+
+#[derive(Debug, Clone)]
 pub struct Scope {
     pub(crate) id: ScopeId,
     pub(crate) kind: ScopeKind,
     pub(crate) bindings: HashMap<JsWord, Binding>,
-    pub(crate) type_bindings: HashMap<JsWord, Span>,
+    pub(crate) type_bindings: HashMap<JsWord, TypeBinding>,
     pub(crate) references: HashSet<JsWord>,
     pub(crate) type_references: HashSet<JsWord>,
     pub(crate) ambiguous_references: HashSet<JsWord>,
@@ -119,10 +126,10 @@ impl Scope {
 
 #[derive(Debug)]
 pub struct ModuleExport {
-    pub(crate) span: Span,
     pub(crate) name: ExportName,
     pub(crate) local_name: Option<JsWord>,
     pub(crate) kind: ExportKind,
+    pub(crate) source: ModuleSourceAndLine,
 }
 
 #[derive(Debug)]
@@ -137,9 +144,19 @@ pub enum ExportState {
     InExport,
 }
 
+struct SourceMapDebugNopAdapter(SourceMap);
+
+impl std::fmt::Debug for SourceMapDebugNopAdapter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SourceMap").finish()
+    }
+}
+
 #[derive(Debug)]
 pub struct ModuleVisitor {
-    name: String,
+    root_relative_path: Arc<PathBuf>,
+
+    source_map: SourceMapDebugNopAdapter,
 
     pub(crate) scope_stack: Vec<ScopeId>,
     pub(crate) scopes: Vec<Scope>,
@@ -182,13 +199,16 @@ impl<'a> Iterator for ScopeIterator<'a> {
 }
 
 impl ModuleVisitor {
-    pub fn new(name: impl Into<String>) -> Self {
+    pub fn new(path: impl Into<Arc<PathBuf>>, source_map: SourceMap) -> Self {
         let root_scope = Scope::new(0, None, ScopeKind::Root);
         let scope_stack = vec![root_scope.id];
         let scopes = vec![root_scope];
 
+        let source_map = SourceMapDebugNopAdapter(source_map);
+
         ModuleVisitor {
-            name: name.into(),
+            root_relative_path: path.into(),
+            source_map,
             scope_stack,
             scopes,
             in_type: false,
@@ -234,23 +254,17 @@ impl ModuleVisitor {
     }
 
     fn current_scope(&mut self) -> &mut Scope {
-        self.current_scope_and_name_hack().0
-    }
-
-    // borrow checker hates me :(
-    fn current_scope_and_name_hack(&mut self) -> (&mut Scope, &str) {
-        let name = self.name.as_str();
-
         let scope_id = self
             .scope_stack
             .last()
             .expect("Scope stack should always contain at least one element");
 
-        (&mut self.scopes[scope_id.0], name)
+        &mut self.scopes[scope_id.0]
     }
 
     fn add_binding(&mut self, ident: &Ident, kind: BindingKind) {
-        let (scope, name) = self.current_scope_and_name_hack();
+        let path = self.root_relative_path.clone();
+        let scope = self.current_scope();
 
         let entry = scope.bindings.entry(ident.sym.clone());
 
@@ -262,7 +276,9 @@ impl ModuleVisitor {
                 } else {
                     panic!(
                         "Expected {} not to be redeclared ({}:{:?})",
-                        ident.sym, name, &ident.span
+                        ident.sym,
+                        path.display(),
+                        &ident.span
                     );
                 }
             })
@@ -270,8 +286,13 @@ impl ModuleVisitor {
     }
 
     fn add_type_binding(&mut self, ident: &Ident) {
+        let source = self.create_span_source(ident.span);
         let scope = self.current_scope();
-        let was_in = scope.type_bindings.insert(ident.sym.clone(), ident.span);
+
+        let was_in = scope
+            .type_bindings
+            .insert(ident.sym.clone(), TypeBinding { source });
+
         debug_assert!(
             was_in.is_none(),
             "Expected {} not to be redeclared",
@@ -316,8 +337,8 @@ impl ModuleVisitor {
             ExportState::InExport => self.exports.push(ModuleExport {
                 name: ExportName::Named(name.sym.clone()),
                 local_name: Some(name.sym.clone()),
-                span,
                 kind,
+                source: self.create_span_source(span),
             }),
         }
     }
@@ -329,11 +350,17 @@ impl ModuleVisitor {
     pub fn get_scope(&self, scope_id: ScopeId) -> &Scope {
         &self.scopes[scope_id.0]
     }
-}
 
-impl Default for ModuleVisitor {
-    fn default() -> Self {
-        Self::new("unknown")
+    fn create_span_source(&self, span: Span) -> ModuleSourceAndLine {
+        let line = self
+            .source_map
+            .0
+            // https://github.com/swc-project/swc/issues/2757
+            .lookup_line(span.lo())
+            .map(|source_and_line| source_and_line.line)
+            .unwrap_or(0);
+
+        ModuleSourceAndLine::new(self.root_relative_path.clone(), line)
     }
 }
 
@@ -357,9 +384,9 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
 
             self.exports.push(ModuleExport {
                 name: ExportName::Default,
-                span: default_decl.span,
                 local_name: local_ident.map(|ident| ident.sym.clone()),
                 kind,
+                source: self.create_span_source(default_decl.span),
             });
         }
 
@@ -394,8 +421,8 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
             self.exports.push(ModuleExport {
                 name: ExportName::Default,
                 local_name: None,
-                span: export_default_expr.span,
                 kind: ExportKind::Unknown,
+                source: self.create_span_source(export_default_expr.span),
             });
         }
 
@@ -415,8 +442,8 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
                     ModuleExport {
                         name: ExportName::Named(namespace_export.name.sym.clone()),
                         local_name: None,
-                        span: namespace_export.span,
                         kind: ExportKind::Unknown,
+                        source: self.create_span_source(namespace_export.span),
                     },
                     ModuleImport {
                         imported_name: ImportName::Wildcard,
@@ -438,9 +465,9 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
                     Some((
                         ModuleExport {
                             name: export_name,
-                            span: named.span,
                             local_name: Some(named.orig.sym.clone()),
                             kind: ExportKind::Unknown,
+                            source: self.create_span_source(named.span),
                         },
                         ModuleImport {
                             imported_name: ImportName::Named(named.orig.sym.clone()),

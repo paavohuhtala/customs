@@ -16,6 +16,12 @@ use crate::config::AnalyzeTarget;
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
 pub struct NormalizedModulePath(PathBuf);
 
+impl NormalizedModulePath {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self(path.into())
+    }
+}
+
 impl Deref for NormalizedModulePath {
     type Target = PathBuf;
 
@@ -30,6 +36,12 @@ pub enum ExportName {
     Default,
 }
 
+impl ExportName {
+    pub fn named(name: impl Into<JsWord>) -> Self {
+        Self::Named(name.into())
+    }
+}
+
 impl Display for ExportName {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
@@ -39,7 +51,7 @@ impl Display for ExportName {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ModuleSourceAndLine {
     path: Arc<PathBuf>,
     zero_based_line: usize,
@@ -51,6 +63,11 @@ impl ModuleSourceAndLine {
             path,
             zero_based_line,
         }
+    }
+
+    #[cfg(test)]
+    pub fn new_mock() -> ModuleSourceAndLine {
+        ModuleSourceAndLine::new(Arc::new(PathBuf::from("mock.ts")), 0)
     }
 
     pub fn path(&self) -> &Path {
@@ -85,6 +102,10 @@ impl Export {
             location,
         }
     }
+
+    pub fn is_used(&self) -> bool {
+        self.usage.get().is_used()
+    }
 }
 
 #[derive(PartialEq, Eq, Hash, Debug, Default, Copy, Clone)]
@@ -106,26 +127,32 @@ pub enum ImportName {
     Wildcard,
 }
 
+impl ImportName {
+    pub fn named(name: impl Into<JsWord>) -> Self {
+        ImportName::Named(name.into())
+    }
+}
+
+pub struct ModulePath {
+    pub root: Arc<PathBuf>,
+    pub root_relative: Arc<PathBuf>,
+    pub normalized: NormalizedModulePath,
+}
+
 pub struct Module {
+    pub path: ModulePath,
     pub kind: ModuleKind,
-    pub normalized_path: NormalizedModulePath,
     pub exports: HashMap<ExportName, Export>,
     pub imported_modules: HashMap<NormalizedModulePath, Vec<ImportName>>,
     pub imported_packages: HashSet<String>,
-    pub source: Arc<PathBuf>,
     is_wildcard_imported: Cell<bool>,
 }
 
 impl Module {
-    pub fn new(
-        source_path: Arc<PathBuf>,
-        normalized_path: NormalizedModulePath,
-        kind: ModuleKind,
-    ) -> Module {
+    pub fn new(path: ModulePath, kind: ModuleKind) -> Module {
         Module {
+            path,
             kind,
-            source: source_path,
-            normalized_path,
             exports: HashMap::new(),
             imported_modules: HashMap::new(),
             imported_packages: HashSet::new(),
@@ -141,8 +168,14 @@ impl Module {
         self.is_wildcard_imported.set(true)
     }
 
-    pub fn add_export(&mut self, (name, export): (ExportName, Export)) {
+    pub fn add_export(&mut self, name: ExportName, export: Export) {
         self.exports.insert(name, export);
+    }
+
+    pub fn imports_mut(&mut self, module_path: NormalizedModulePath) -> &mut Vec<ImportName> {
+        self.imported_modules
+            .entry(module_path)
+            .or_insert_with(Vec::new)
     }
 }
 

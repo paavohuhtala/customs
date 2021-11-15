@@ -1,4 +1,4 @@
-use std::{path::PathBuf, str::FromStr};
+use std::{path::PathBuf, str::FromStr, sync::Arc};
 
 use anyhow::anyhow;
 
@@ -58,7 +58,7 @@ impl FromStr for AnalyzeTarget {
 }
 
 pub struct Config {
-    pub root: PathBuf,
+    pub root: Arc<PathBuf>,
     pub format: OutputFormat,
 
     pub analyze_target: AnalyzeTarget,

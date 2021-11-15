@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     config::Config,
@@ -8,7 +8,7 @@ use crate::{
     package_json::PackageJson,
 };
 
-pub fn resolve_module_imports(modules: &std::collections::HashMap<NormalizedModulePath, Module>) {
+pub fn resolve_module_imports(modules: &HashMap<NormalizedModulePath, Module>) {
     for (path, module) in modules.iter() {
         for (import_path, imports) in &module.imported_modules {
             match modules.get(import_path) {
@@ -46,12 +46,7 @@ pub fn resolve_module_imports(modules: &std::collections::HashMap<NormalizedModu
                             }
                             Some(export) => {
                                 // TODO put behind debug logging
-
-                                /* println!(
-                                    "Marking {}##{} as used",
-                                    import_path.0.to_string_lossy(),
-                                    key.get_name()
-                                );*/
+                                // println!("Marking {}##{} as used", import_path.display(), key);
 
                                 export.usage.set(Usage {
                                     used_externally: true,
@@ -71,7 +66,7 @@ pub struct UnusedExportsResults {
 }
 
 pub fn find_unused_exports(
-    modules: std::collections::HashMap<NormalizedModulePath, Module>,
+    modules: HashMap<NormalizedModulePath, Module>,
     config: &Config,
 ) -> UnusedExportsResults {
     let mut sorted_exports = modules
@@ -98,7 +93,7 @@ pub fn find_unused_exports(
 }
 
 pub fn find_unused_dependencies(
-    modules: &std::collections::HashMap<NormalizedModulePath, Module>,
+    modules: &HashMap<NormalizedModulePath, Module>,
     package_json: &PackageJson,
     _config: &Config,
 ) -> Vec<String> {
@@ -117,4 +112,62 @@ pub fn find_unused_dependencies(
         .difference(&imported_packages)
         .map(|item| (*item).to_string())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{path::PathBuf, sync::Arc};
+
+    use crate::dependency_graph::{
+        Export, ExportKind, ModuleKind, ModulePath, Visibility::Exported,
+    };
+
+    use super::*;
+
+    #[test]
+    fn imports_smoke() {
+        let root_path: Arc<PathBuf> = Arc::new("".into());
+
+        let mut modules = HashMap::new();
+
+        let module_a_path = NormalizedModulePath::new("a");
+
+        let mut module_a = Module::new(
+            ModulePath {
+                root: root_path.clone(),
+                root_relative: Arc::new("a".into()),
+                normalized: module_a_path.clone(),
+            },
+            ModuleKind::TS,
+        );
+        let export_foo = Export::new(ExportKind::Value, Exported, ModuleSourceAndLine::new_mock());
+        module_a.add_export(ExportName::named("foo"), export_foo);
+        let export_bar = Export::new(ExportKind::Value, Exported, ModuleSourceAndLine::new_mock());
+        module_a.add_export(ExportName::named("bar"), export_bar);
+
+        modules.insert(module_a_path.clone(), module_a);
+
+        let module_b_path = NormalizedModulePath::new("b");
+        let mut module_b = Module::new(
+            ModulePath {
+                root: root_path.clone(),
+                root_relative: Arc::new("b".into()),
+                normalized: module_b_path.clone(),
+            },
+            ModuleKind::TS,
+        );
+        module_b
+            .imports_mut(module_a_path.clone())
+            .push(ImportName::named("foo"));
+
+        modules.insert(module_b_path.clone(), module_b);
+
+        resolve_module_imports(&modules);
+
+        let module_a_exports = &modules.get(&module_a_path).unwrap().exports;
+        let export_foo = module_a_exports.get(&ExportName::named("foo")).unwrap();
+        assert!(export_foo.is_used(), "foo should be marked as used");
+        let export_foo = module_a_exports.get(&ExportName::named("bar")).unwrap();
+        assert!(!export_foo.is_used(), "bar should not be marked as used");
+    }
 }

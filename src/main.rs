@@ -1,4 +1,4 @@
-use std::{path::PathBuf, time::Instant};
+use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use customs_analysis::{
     analysis::{find_unused_dependencies, find_unused_exports, resolve_module_imports},
@@ -26,7 +26,7 @@ struct Opts {
 impl Opts {
     pub fn into_config(self) -> Config {
         Config {
-            root: self.target_dir,
+            root: Arc::new(self.target_dir),
             format: OutputFormat::Text,
             analyze_target: self.analyze,
             ignored_folders: Vec::new(),
