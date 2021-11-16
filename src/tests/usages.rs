@@ -761,3 +761,34 @@ pub fn class_implements() {
 
     run_test(spec);
 }
+
+#[test]
+pub fn ts_type_alias() {
+    let source = r#"
+        interface A<T> { x: T }
+        type B = A<string>
+    "#;
+
+    let spec = TestSpec {
+        source,
+        exports: vec![],
+        imports: vec![],
+        scope: TestScope {
+            type_bindings: vec!["A", "B"],
+            inner: vec![
+                TestScope {
+                    type_bindings: vec!["T"],
+                    type_references: vec!["T"],
+                    ..Default::default()
+                },
+                TestScope {
+                    type_references: vec!["A"],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        },
+    };
+
+    run_test(spec);
+}

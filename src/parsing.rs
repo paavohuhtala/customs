@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     ffi::OsStr,
+    marker::PhantomData,
     ops::Deref,
     path::{Path, PathBuf},
     rc::Rc,
@@ -21,10 +22,10 @@ use swc_ecma_visit::Visit;
 use crate::{
     config::Config,
     dependency_graph::{
-        normalize_module_path, resolve_import_source, Export, ExportName, Module, ModuleKind,
-        ModulePath, NormalizedImportSource, NormalizedModulePath, Usage, Visibility,
+        normalize_module_path, resolve_import_source, Export, ExportKind, ExportName, Module,
+        ModuleKind, ModulePath, NormalizedImportSource, NormalizedModulePath, Usage, Visibility,
     },
-    module_visitor::{ModuleImport, ModuleVisitor},
+    module_visitor::{BindingId, ModuleImport, ModuleVisitor, ScopeId},
 };
 
 fn normalize_package_import(import_source: &str) -> Option<String> {
@@ -127,7 +128,9 @@ fn is_shadowed_export_used(module_visitor: &ModuleVisitor, identifier: &JsWord) 
             continue;
         }
 
-        if scope.references.contains(identifier) || scope.type_references.contains(identifier) {
+        if scope.references.contains_key(identifier)
+            || scope.type_references.contains_key(identifier)
+        {
             return true;
         }
 
@@ -165,7 +168,150 @@ fn read_and_parse_module(
     analyze_module(module, visitor)
 }
 
+#[derive(Debug)]
+enum ValueBindingKind {}
+#[derive(Debug)]
+enum TypeBindingKind {}
+
+#[derive(Debug)]
+struct Binding<Kind> {
+    kind: PhantomData<Kind>,
+    name: JsWord,
+    scope: ScopeId,
+    reference_count: usize,
+    is_exported: bool,
+}
+
+type ValueBinding = Binding<ValueBindingKind>;
+type TypeBinding = Binding<TypeBindingKind>;
+
+fn resolve_references(visitor: &ModuleVisitor) {
+    let mut bindings: HashMap<BindingId, ValueBinding> = HashMap::new();
+    let mut type_bindings: HashMap<BindingId, TypeBinding> = HashMap::new();
+
+    // println!("{:#?}", visitor);
+
+    for scope in &visitor.scopes {
+        for binding in scope.bindings.values() {
+            bindings.insert(
+                binding.id,
+                Binding {
+                    kind: PhantomData,
+                    name: binding.name.clone(),
+                    scope: scope.id,
+                    reference_count: 0,
+                    is_exported: false,
+                },
+            );
+        }
+
+        for binding in scope.type_bindings.values() {
+            type_bindings.insert(
+                binding.id,
+                Binding {
+                    kind: PhantomData,
+                    name: binding.name.clone(),
+                    scope: scope.id,
+                    reference_count: 0,
+                    is_exported: false,
+                },
+            );
+        }
+
+        // Failing to resolve references is not an error, because we don't know all of the bindings (e.g globals, ambient declarations)
+
+        'match_references: for (reference, _source) in scope.references.iter() {
+            for scope in visitor.scope_and_parents_iter(scope) {
+                if let Some(binding) = scope.bindings.get(reference) {
+                    let binding = bindings.get_mut(&binding.id).unwrap();
+                    binding.reference_count += 1;
+                    continue 'match_references;
+                }
+            }
+
+            // panic!("Failed to resolve reference {} (in {})", reference, source)
+        }
+
+        'match_type_references: for (reference, _source) in scope.type_references.iter() {
+            for scope in visitor.scope_and_parents_iter(scope) {
+                if let Some(binding) = scope.type_bindings.get(reference) {
+                    let binding = type_bindings.get_mut(&binding.id).unwrap();
+                    binding.reference_count += 1;
+                    continue 'match_type_references;
+                }
+            }
+
+            /*panic!(
+                "Failed to resolve type reference {} (in {})",
+                reference, source
+            )*/
+        }
+
+        'match_ambiguous_references: for (reference, _source) in scope.ambiguous_references.iter() {
+            for scope in visitor.scope_and_parents_iter(scope) {
+                if let Some(binding) = scope.bindings.get(reference) {
+                    let binding = bindings.get_mut(&binding.id).unwrap();
+                    binding.reference_count += 1;
+                    continue 'match_ambiguous_references;
+                }
+
+                if let Some(binding) = scope.type_bindings.get(reference) {
+                    let binding = type_bindings.get_mut(&binding.id).unwrap();
+                    binding.reference_count += 1;
+                    continue 'match_ambiguous_references;
+                }
+
+                /*panic!(
+                    "Failed to resolve ambiguous (type or value) reference {} (in {})",
+                    reference, source
+                )*/
+            }
+        }
+    }
+
+    fn mark_as_exported<BK>(
+        bindings: &mut HashMap<BindingId, Binding<BK>>,
+        local_name: Option<&JsWord>,
+    ) {
+        let local_name = if let Some(local_name) = local_name {
+            local_name
+        } else {
+            return;
+        };
+
+        let exported_binding = bindings
+            .values_mut()
+            .filter(|binding| binding.scope.is_root())
+            .find(|binding| &binding.name == local_name);
+
+        if let Some(exported_binding) = exported_binding {
+            exported_binding.is_exported = true;
+        }
+    }
+
+    // TODO: Add diagnostics if any of these fail
+    for export in visitor.exports.iter() {
+        match export.kind {
+            ExportKind::Type => {
+                mark_as_exported(&mut type_bindings, export.local_name.as_ref());
+            }
+            ExportKind::Value => {
+                mark_as_exported(&mut bindings, export.local_name.as_ref());
+            }
+            ExportKind::Class | ExportKind::Enum | ExportKind::Unknown => {
+                mark_as_exported(&mut bindings, export.local_name.as_ref());
+                mark_as_exported(&mut type_bindings, export.local_name.as_ref());
+            }
+        }
+    }
+
+    println!("{:#?}", bindings);
+    println!("{:#?}", type_bindings);
+}
+
 pub fn analyze_module(mut module: Module, visitor: ModuleVisitor) -> anyhow::Result<Module> {
+    resolve_references(&visitor);
+
     let binding_counts = visitor
         .scopes
         .iter()
@@ -184,9 +330,9 @@ pub fn analyze_module(mut module: Module, visitor: ModuleVisitor) -> anyhow::Res
         .flat_map(|scope| {
             scope
                 .references
-                .iter()
-                .chain(scope.ambiguous_references.iter())
-                .chain(scope.type_references.iter())
+                .keys()
+                .chain(scope.ambiguous_references.keys())
+                .chain(scope.type_references.keys())
         })
         .counts();
 

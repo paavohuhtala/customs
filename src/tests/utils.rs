@@ -2,12 +2,15 @@ use std::{
     borrow::Borrow,
     collections::{HashMap, HashSet},
     path::PathBuf,
+    sync::Arc,
 };
 
 use crate::{
-    dependency_graph::{ExportName, ImportName},
+    dependency_graph::{
+        normalize_module_path, ExportName, ImportName, Module, ModuleKind, ModulePath,
+    },
     module_visitor::{ModuleVisitor, Scope, ScopeId},
-    parsing::module_from_source,
+    parsing::{analyze_module, module_from_source},
 };
 
 use anyhow::Context;
@@ -15,7 +18,7 @@ use pretty_assertions::assert_eq;
 use swc_atoms::JsWord;
 use swc_ecma_visit::Visit;
 
-pub fn parse_and_visit(virtual_path: &'static str, source: &'static str) -> ModuleVisitor {
+pub(crate) fn parse_and_visit(virtual_path: &'static str, source: &'static str) -> ModuleVisitor {
     let (source_map, module) = module_from_source(
         String::from(source),
         crate::dependency_graph::ModuleKind::TS,
@@ -27,6 +30,34 @@ pub fn parse_and_visit(virtual_path: &'static str, source: &'static str) -> Modu
     let mut visitor = ModuleVisitor::new(PathBuf::from(virtual_path), source_map);
     visitor.visit_module(&module, &module);
     visitor
+}
+
+pub(crate) fn parse_and_analyze(virtual_path: &'static str, source: &'static str) -> Module {
+    let module_kind = if virtual_path.ends_with(".d.ts") {
+        ModuleKind::DTS
+    } else if virtual_path.ends_with(".tsx") {
+        ModuleKind::TSX
+    } else {
+        ModuleKind::TS
+    };
+
+    let visitor = parse_and_visit(virtual_path, source);
+
+    let root = Arc::new(PathBuf::from(""));
+
+    let virtual_path = PathBuf::from(virtual_path);
+    let normalized = normalize_module_path(&root, &virtual_path).unwrap();
+
+    let module = Module::new(
+        ModulePath {
+            root,
+            root_relative: Arc::new(virtual_path),
+            normalized,
+        },
+        module_kind,
+    );
+
+    analyze_module(module, visitor).unwrap()
 }
 
 pub struct TestScope {

@@ -61,6 +61,7 @@ pub fn resolve_module_imports(modules: &HashMap<NormalizedModulePath, Module>) {
     }
 }
 
+#[derive(Debug)]
 pub struct UnusedExportsResults {
     pub sorted_exports: Vec<(ExportName, ModuleSourceAndLine, Usage)>,
 }
@@ -118,8 +119,10 @@ pub fn find_unused_dependencies(
 mod tests {
     use std::{path::PathBuf, sync::Arc};
 
-    use crate::dependency_graph::{
-        Export, ExportKind, ModuleKind, ModulePath, Visibility::Exported,
+    use crate::{
+        config::{AnalyzeTarget, OutputFormat},
+        dependency_graph::{Export, ExportKind, ModuleKind, ModulePath, Visibility::Exported},
+        tests::utils::parse_and_analyze,
     };
 
     use super::*;
@@ -169,5 +172,31 @@ mod tests {
         assert!(export_foo.is_used(), "foo should be marked as used");
         let export_foo = module_a_exports.get(&ExportName::named("bar")).unwrap();
         assert!(!export_foo.is_used(), "bar should not be marked as used");
+    }
+
+    #[test]
+    fn dts_exports() {
+        let module_a = parse_and_analyze(
+            "a.d.ts",
+            r#"
+            interface A<T> { x: T }
+            type B = A<string>
+        "#,
+        );
+
+        let modules = HashMap::from_iter(vec![(NormalizedModulePath::new("a"), module_a)]);
+        resolve_module_imports(&modules);
+
+        let config = Config {
+            root: Arc::from(PathBuf::from("")),
+            format: OutputFormat::Text,
+            analyze_target: AnalyzeTarget::All,
+            ignored_folders: vec![],
+        };
+
+        let results = find_unused_exports(modules, &config);
+
+        println!("{:#?}", results);
+        todo!();
     }
 }
