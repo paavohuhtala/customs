@@ -80,7 +80,7 @@ pub fn find_unused_exports(
                 .filter(|(_, export)| !export.usage.get().used_externally)
                 .filter(|(_, export)| export.kind.matches_analyze_target(config.analyze_target))
         })
-        .map(|(name, export)| (name, export.location, export.usage.take()))
+        .map(|(name, export)| (name, export.source, export.usage.take()))
         .collect::<Vec<(ExportName, ModuleSourceAndLine, Usage)>>();
 
     sorted_exports.sort_unstable_by(|(_, a_location, _), (_, b_location, _)| {
@@ -180,7 +180,7 @@ mod tests {
             "a.d.ts",
             r#"
             interface A<T> { x: T }
-            type B = A<string>
+            export type B = A<string>
         "#,
         );
 

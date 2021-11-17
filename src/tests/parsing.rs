@@ -1,4 +1,4 @@
-use crate::tests::utils::{run_test, TestScope, TestSpec};
+use crate::tests::utils::{run_test, TestBinding, TestScope, TestSpec};
 
 #[test]
 pub fn ts_type() {
@@ -9,7 +9,7 @@ pub fn ts_type() {
         exports: vec![],
         imports: vec![],
         scope: TestScope {
-            type_bindings: vec!["Foo"],
+            type_bindings: vec![TestBinding::private("Foo")],
             inner: vec![TestScope::default()],
             ..Default::default()
         },
@@ -27,7 +27,7 @@ pub fn ts_interface() {
         exports: vec![],
         imports: vec![],
         scope: TestScope {
-            type_bindings: vec!["Foo"],
+            type_bindings: vec![TestBinding::private("Foo")],
             inner: vec![TestScope::default()],
 
             ..Default::default()
@@ -49,8 +49,8 @@ pub fn type_and_value_of_same_name() {
         exports: vec![],
         imports: vec![],
         scope: TestScope {
-            bindings: vec!["Foo"],
-            type_bindings: vec!["Foo"],
+            bindings: vec![TestBinding::private("Foo")],
+            type_bindings: vec![TestBinding::private("Foo")],
             inner: vec![TestScope::default()],
             ..Default::default()
         },

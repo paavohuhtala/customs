@@ -9,7 +9,6 @@ use std::{
 };
 
 use anyhow::{anyhow, Context};
-use itertools::Itertools;
 use lazy_static::lazy_static;
 use rayon::prelude::*;
 use regex::Regex;
@@ -23,9 +22,10 @@ use crate::{
     config::Config,
     dependency_graph::{
         normalize_module_path, resolve_import_source, Export, ExportKind, ExportName, Module,
-        ModuleKind, ModulePath, NormalizedImportSource, NormalizedModulePath, Usage, Visibility,
+        ModuleKind, ModulePath, ModuleSourceAndLine, NormalizedImportSource, NormalizedModulePath,
+        Usage, Visibility,
     },
-    module_visitor::{BindingId, ModuleImport, ModuleVisitor, ScopeId},
+    module_visitor::{BindingId, ExportId, ModuleImport, ModuleVisitor, ScopeId, SelfExport},
 };
 
 fn normalize_package_import(import_source: &str) -> Option<String> {
@@ -119,29 +119,6 @@ pub fn module_from_source_file(
     Ok(module)
 }
 
-fn is_shadowed_export_used(module_visitor: &ModuleVisitor, identifier: &JsWord) -> bool {
-    let root_scope = &module_visitor.scopes[0];
-    let mut stack = vec![root_scope];
-
-    while let Some(scope) = stack.pop() {
-        if scope.bindings.contains_key(identifier) || scope.type_bindings.contains_key(identifier) {
-            continue;
-        }
-
-        if scope.references.contains_key(identifier)
-            || scope.type_references.contains_key(identifier)
-        {
-            return true;
-        }
-
-        for child in &scope.children {
-            stack.push(&module_visitor.get_scope(*child));
-        }
-    }
-
-    false
-}
-
 fn read_and_parse_module(
     root: Arc<PathBuf>,
     file_path: &Path,
@@ -153,6 +130,9 @@ fn read_and_parse_module(
 
     let file_path = Arc::new(file_path.to_path_buf());
 
+    let mut visitor = ModuleVisitor::new(file_path.clone(), source_map);
+    visitor.visit_module(&module_ast, &module_ast);
+
     let module = Module::new(
         ModulePath {
             root,
@@ -161,9 +141,6 @@ fn read_and_parse_module(
         },
         module_kind,
     );
-
-    let mut visitor = ModuleVisitor::new(module.path.root_relative.clone(), source_map);
-    visitor.visit_module(&module_ast, &module_ast);
 
     analyze_module(module, visitor)
 }
@@ -179,17 +156,22 @@ struct Binding<Kind> {
     name: JsWord,
     scope: ScopeId,
     reference_count: usize,
-    is_exported: bool,
+    source: ModuleSourceAndLine,
+    export: SelfExport,
+    export_ids: HashSet<ExportId>,
 }
 
 type ValueBinding = Binding<ValueBindingKind>;
 type TypeBinding = Binding<TypeBindingKind>;
 
-fn resolve_references(visitor: &ModuleVisitor) {
+struct Bindings {
+    values: Vec<ValueBinding>,
+    types: Vec<TypeBinding>,
+}
+
+fn resolve_references(visitor: &ModuleVisitor, module_kind: ModuleKind) -> Bindings {
     let mut bindings: HashMap<BindingId, ValueBinding> = HashMap::new();
     let mut type_bindings: HashMap<BindingId, TypeBinding> = HashMap::new();
-
-    // println!("{:#?}", visitor);
 
     for scope in &visitor.scopes {
         for binding in scope.bindings.values() {
@@ -200,7 +182,9 @@ fn resolve_references(visitor: &ModuleVisitor) {
                     name: binding.name.clone(),
                     scope: scope.id,
                     reference_count: 0,
-                    is_exported: false,
+                    export_ids: HashSet::new(),
+                    export: binding.export,
+                    source: binding.source.clone(),
                 },
             );
         }
@@ -213,7 +197,9 @@ fn resolve_references(visitor: &ModuleVisitor) {
                     name: binding.name.clone(),
                     scope: scope.id,
                     reference_count: 0,
-                    is_exported: false,
+                    export_ids: HashSet::new(),
+                    export: binding.export,
+                    source: binding.source.clone(),
                 },
             );
         }
@@ -228,8 +214,6 @@ fn resolve_references(visitor: &ModuleVisitor) {
                     continue 'match_references;
                 }
             }
-
-            // panic!("Failed to resolve reference {} (in {})", reference, source)
         }
 
         'match_type_references: for (reference, _source) in scope.type_references.iter() {
@@ -240,11 +224,6 @@ fn resolve_references(visitor: &ModuleVisitor) {
                     continue 'match_type_references;
                 }
             }
-
-            /*panic!(
-                "Failed to resolve type reference {} (in {})",
-                reference, source
-            )*/
         }
 
         'match_ambiguous_references: for (reference, _source) in scope.ambiguous_references.iter() {
@@ -260,11 +239,6 @@ fn resolve_references(visitor: &ModuleVisitor) {
                     binding.reference_count += 1;
                     continue 'match_ambiguous_references;
                 }
-
-                /*panic!(
-                    "Failed to resolve ambiguous (type or value) reference {} (in {})",
-                    reference, source
-                )*/
             }
         }
     }
@@ -272,6 +246,7 @@ fn resolve_references(visitor: &ModuleVisitor) {
     fn mark_as_exported<BK>(
         bindings: &mut HashMap<BindingId, Binding<BK>>,
         local_name: Option<&JsWord>,
+        export_id: ExportId,
     ) {
         let local_name = if let Some(local_name) = local_name {
             local_name
@@ -285,7 +260,7 @@ fn resolve_references(visitor: &ModuleVisitor) {
             .find(|binding| &binding.name == local_name);
 
         if let Some(exported_binding) = exported_binding {
-            exported_binding.is_exported = true;
+            exported_binding.export_ids.insert(export_id);
         }
     }
 
@@ -293,49 +268,75 @@ fn resolve_references(visitor: &ModuleVisitor) {
     for export in visitor.exports.iter() {
         match export.kind {
             ExportKind::Type => {
-                mark_as_exported(&mut type_bindings, export.local_name.as_ref());
+                mark_as_exported(&mut type_bindings, export.local_name.as_ref(), export.id);
             }
             ExportKind::Value => {
-                mark_as_exported(&mut bindings, export.local_name.as_ref());
+                mark_as_exported(&mut bindings, export.local_name.as_ref(), export.id);
             }
             ExportKind::Class | ExportKind::Enum | ExportKind::Unknown => {
-                mark_as_exported(&mut bindings, export.local_name.as_ref());
-                mark_as_exported(&mut type_bindings, export.local_name.as_ref());
+                mark_as_exported(&mut bindings, export.local_name.as_ref(), export.id);
+                mark_as_exported(&mut type_bindings, export.local_name.as_ref(), export.id);
             }
         }
     }
 
-    println!("{:#?}", bindings);
-    println!("{:#?}", type_bindings);
+    // Only include bindings in root scope, because only they can be exported
+    // If this is a declaration (DTS) file, consider all bindings in root scope to be implicitly exported
+    // Otherwise, only consider bindings that are explicitly exported
+
+    // TODO: DRY
+    bindings.retain(|_, binding| {
+        if !binding.scope.is_root() {
+            return false;
+        }
+
+        if module_kind == ModuleKind::DTS {
+            return true;
+        }
+
+        !binding.export_ids.is_empty()
+    });
+
+    type_bindings.retain(|_, binding| {
+        if !binding.scope.is_root() {
+            return false;
+        }
+
+        if module_kind == ModuleKind::DTS {
+            return true;
+        }
+
+        !binding.export_ids.is_empty()
+    });
+
+    let values = bindings.into_values().collect();
+    let types = type_bindings.into_values().collect();
+
+    Bindings { values, types }
 }
 
 pub fn analyze_module(mut module: Module, visitor: ModuleVisitor) -> anyhow::Result<Module> {
-    resolve_references(&visitor);
+    let Bindings { values, types } = resolve_references(&visitor, module.kind);
 
-    let binding_counts = visitor
-        .scopes
-        .iter()
-        .flat_map(|scope| {
-            scope
-                .bindings
-                .keys()
-                .chain(scope.type_bindings.iter().map(|binding| binding.0))
-                .unique()
-        })
-        .counts();
+    println!("{:#?}", values);
+    println!("{:#?}", types);
 
-    let reference_counts = visitor
-        .scopes
-        .iter()
-        .flat_map(|scope| {
-            scope
-                .references
-                .keys()
-                .chain(scope.ambiguous_references.keys())
-                .chain(scope.type_references.keys())
-        })
-        .counts();
+    let ModuleVisitor {
+        exports, imports, ..
+    } = visitor;
 
+    for export in exports {
+        if export.local_name.is_none() {
+            module.add_export(
+                export.name,
+                Export::new(export.kind, Visibility::Exported, export.source),
+            );
+        } else {
+            let export = Export::new(export.kind, Visibility::Exported, export.source);
+        }
+    }
+
+    /*
     let named_exports = visitor
         .exports
         .iter()
@@ -394,7 +395,7 @@ pub fn analyze_module(mut module: Module, visitor: ModuleVisitor) -> anyhow::Res
                 ),
             );
         }
-    }
+    }*/
 
     let current_folder = module
         .path

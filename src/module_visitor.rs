@@ -56,6 +56,9 @@ impl Display for ScopeId {
 #[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
 pub struct BindingId(usize);
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
+pub struct ExportId(usize);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BindingKind {
     Value,
@@ -63,24 +66,23 @@ enum BindingKind {
     TsFunctionOverload,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum SelfExport {
+    Private,
+    Named,
+    Default,
+}
+
 #[derive(Debug, Clone)]
 pub struct Binding {
     pub id: BindingId,
     pub name: JsWord,
-    span: Span,
+    pub source: ModuleSourceAndLine,
     kind: BindingKind,
+    pub export: SelfExport,
 }
 
 impl Binding {
-    fn new(id: BindingId, ident: &Ident, kind: BindingKind) -> Self {
-        Binding {
-            id,
-            name: ident.sym.clone(),
-            span: ident.span,
-            kind,
-        }
-    }
-
     fn can_be_shadowed_by(&self, other_kind: BindingKind) -> bool {
         match (self.kind, other_kind) {
             (
@@ -97,6 +99,32 @@ pub struct TypeBinding {
     pub id: BindingId,
     pub name: JsWord,
     pub source: ModuleSourceAndLine,
+    pub export: SelfExport,
+}
+
+pub trait BindingLike {
+    fn name(&self) -> &JsWord;
+    fn export(&self) -> SelfExport;
+}
+
+impl BindingLike for Binding {
+    fn name(&self) -> &JsWord {
+        &self.name
+    }
+
+    fn export(&self) -> SelfExport {
+        self.export
+    }
+}
+
+impl BindingLike for TypeBinding {
+    fn name(&self) -> &JsWord {
+        &self.name
+    }
+
+    fn export(&self) -> SelfExport {
+        self.export
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +160,7 @@ impl Scope {
 
 #[derive(Debug)]
 pub struct ModuleExport {
+    pub(crate) id: ExportId,
     pub(crate) name: ExportName,
     pub(crate) local_name: Option<JsWord>,
     pub(crate) kind: ExportKind,
@@ -145,9 +174,10 @@ pub struct ModuleImport {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum ExportState {
+enum ExportState {
     Private,
     InExport,
+    InDefaultExport,
 }
 
 struct SourceMapDebugNopAdapter(SourceMap);
@@ -176,6 +206,7 @@ pub struct ModuleVisitor {
 
     next_binding_id: usize,
     next_type_binding_id: usize,
+    next_export_id: usize,
 }
 
 struct ChildScopeIterator<'a> {
@@ -263,6 +294,7 @@ impl ModuleVisitor {
             in_assign_lhs: false,
             next_binding_id: 0,
             next_type_binding_id: 0,
+            next_export_id: 0,
         }
     }
 
@@ -300,6 +332,14 @@ impl ModuleVisitor {
         self.export_state = ExportState::Private;
     }
 
+    fn enter_default_export(&mut self) {
+        self.export_state = ExportState::InDefaultExport;
+    }
+
+    fn exit_default_export(&mut self) {
+        self.export_state = ExportState::Private;
+    }
+
     fn current_scope(&mut self) -> &mut Scope {
         let scope_id = self
             .scope_stack
@@ -309,38 +349,63 @@ impl ModuleVisitor {
         &mut self.scopes[scope_id.0]
     }
 
+    fn next_export_id(&mut self) -> ExportId {
+        let id = self.next_export_id;
+        self.next_export_id += 1;
+        ExportId(id)
+    }
+
     fn add_binding(&mut self, ident: &Ident, kind: BindingKind) {
         let id = self.next_binding_id;
         self.next_binding_id += 1;
 
-        let path = self.root_relative_path.clone();
+        let source = self.get_source(ident.span);
+
+        let export_state = self.export_state;
         let scope = self.current_scope();
+        let export = match (&scope, export_state) {
+            (scope, _) if !scope.id.is_root() => SelfExport::Private,
+            (_, ExportState::Private) => SelfExport::Private,
+            (_, ExportState::InExport) => SelfExport::Named,
+            (_, ExportState::InDefaultExport) => SelfExport::Default,
+        };
 
         let entry = scope.bindings.entry(ident.sym.clone());
 
         entry
             .and_modify(|old_binding| {
                 if old_binding.can_be_shadowed_by(kind) {
-                    old_binding.span = old_binding.span.until(ident.span);
                     old_binding.kind = kind;
                 } else {
                     panic!(
-                        "Expected {} not to be redeclared ({}:{:?})",
-                        ident.sym,
-                        path.display(),
-                        &ident.span
+                        "Expected {} not to be redeclared (previous {}, current {})",
+                        ident.sym, old_binding.source, source
                     );
                 }
             })
-            .or_insert_with(|| Binding::new(BindingId(id), ident, kind));
+            .or_insert_with(|| Binding {
+                id: BindingId(id),
+                name: ident.sym.clone(),
+                kind,
+                source,
+                export,
+            });
     }
 
     fn add_type_binding(&mut self, ident: &Ident) {
         let id = self.next_type_binding_id;
         self.next_type_binding_id += 1;
 
-        let source = self.create_span_source(ident.span);
+        let source = self.get_source(ident.span);
+
+        let export_state = self.export_state;
         let scope = self.current_scope();
+        let export = match (&scope, export_state) {
+            (scope, _) if !scope.id.is_root() => SelfExport::Private,
+            (_, ExportState::Private) => SelfExport::Private,
+            (_, ExportState::InExport) => SelfExport::Named,
+            (_, ExportState::InDefaultExport) => SelfExport::Default,
+        };
 
         let was_in = scope.type_bindings.insert(
             ident.sym.clone(),
@@ -348,6 +413,7 @@ impl ModuleVisitor {
                 id: BindingId(id),
                 name: ident.sym.clone(),
                 source,
+                export,
             },
         );
 
@@ -359,19 +425,19 @@ impl ModuleVisitor {
     }
 
     fn add_reference(&mut self, ident: &Ident) {
-        let source = self.create_span_source(ident.span);
+        let source = self.get_source(ident.span);
         let scope = self.current_scope();
         scope.references.insert(ident.sym.clone(), source);
     }
 
     fn add_type_reference(&mut self, ident: &Ident) {
-        let source = self.create_span_source(ident.span);
+        let source = self.get_source(ident.span);
         let scope = self.current_scope();
         scope.type_references.insert(ident.sym.clone(), source);
     }
 
     fn add_ambiguous_reference(&mut self, ident: &Ident) {
-        let source = self.create_span_source(ident.span);
+        let source = self.get_source(ident.span);
         let scope = self.current_scope();
         scope.ambiguous_references.insert(ident.sym.clone(), source);
     }
@@ -385,20 +451,23 @@ impl ModuleVisitor {
         self.scope_stack.last().unwrap().0 == 0
     }
 
-    fn register_decl(&mut self, name: &Ident, span: Span, kind: ExportKind) {
-        if !self.in_root_scope() {
+    fn register_decl(&mut self, _name: &Ident, _span: Span, _kind: ExportKind) {
+        /*if !self.in_root_scope() {
             return;
         }
+
+        let id = self.next_export_id();
 
         match self.export_state {
             ExportState::Private => {}
             ExportState::InExport => self.exports.push(ModuleExport {
+                id,
                 name: ExportName::Named(name.sym.clone()),
                 local_name: Some(name.sym.clone()),
                 kind,
-                source: self.create_span_source(span),
+                source: self.get_source(span),
             }),
-        }
+        }*/
     }
 
     pub fn child_scopes<'a>(&'a self, scope: &'a Scope) -> impl Iterator<Item = &'a Scope> {
@@ -416,7 +485,7 @@ impl ModuleVisitor {
         &self.scopes[scope_id.0]
     }
 
-    fn create_span_source(&self, span: Span) -> ModuleSourceAndLine {
+    fn get_source(&self, span: Span) -> ModuleSourceAndLine {
         let line = self
             .source_map
             .0
@@ -438,7 +507,7 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
 
     fn visit_export_default_decl(&mut self, default_decl: &ExportDefaultDecl, _parent: &dyn Node) {
         // This is always true... except in TS declare module blocks
-        if self.in_root_scope() {
+        /*if self.in_root_scope() {
             let (local_ident, kind) = match &default_decl.decl {
                 DefaultDecl::Class(ClassExpr { ident, .. }) => (ident.as_ref(), ExportKind::Class),
                 DefaultDecl::Fn(FnExpr { ident, .. }) => (ident.as_ref(), ExportKind::Value),
@@ -447,19 +516,34 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
                 }
             };
 
+            let id = self.next_export_id();
+
             self.exports.push(ModuleExport {
+                id,
                 name: ExportName::Default,
                 local_name: local_ident.map(|ident| ident.sym.clone()),
                 kind,
-                source: self.create_span_source(default_decl.span),
+                source: self.get_source(default_decl.span),
             });
-        }
+        }*/
+
+        self.enter_default_export();
 
         match &default_decl.decl {
             DefaultDecl::Class(class) => {
                 if let Some(ident) = &class.ident {
                     self.add_binding(ident, BindingKind::Value);
                     self.add_type_binding(ident);
+                } else {
+                    let id = self.next_export_id();
+
+                    self.exports.push(ModuleExport {
+                        id,
+                        name: ExportName::Default,
+                        local_name: None,
+                        kind: ExportKind::Class,
+                        source: self.get_source(default_decl.span),
+                    });
                 }
 
                 self.visit_class_expr(class, default_decl);
@@ -467,6 +551,16 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
             DefaultDecl::Fn(fn_expr) => {
                 if let Some(ident) = &fn_expr.ident {
                     self.add_binding(ident, BindingKind::Function);
+                } else {
+                    let id = self.next_export_id();
+
+                    self.exports.push(ModuleExport {
+                        id,
+                        name: ExportName::Default,
+                        local_name: None,
+                        kind: ExportKind::Value,
+                        source: self.get_source(default_decl.span),
+                    });
                 }
 
                 self.visit_fn_expr(fn_expr, default_decl);
@@ -475,6 +569,8 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
                 self.visit_ts_interface_decl(ts_interface, default_decl);
             }
         }
+
+        self.exit_default_export();
     }
 
     fn visit_export_default_expr(
@@ -483,11 +579,14 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
         _parent: &dyn Node,
     ) {
         if self.in_root_scope() {
+            let id = self.next_export_id();
+
             self.exports.push(ModuleExport {
+                id,
                 name: ExportName::Default,
                 local_name: None,
                 kind: ExportKind::Unknown,
-                source: self.create_span_source(export_default_expr.span),
+                source: self.get_source(export_default_expr.span),
             });
         }
 
@@ -505,10 +604,11 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
             .filter_map(|specifier| match specifier {
                 ExportSpecifier::Namespace(namespace_export) => Some((
                     ModuleExport {
+                        id: self.next_export_id(),
                         name: ExportName::Named(namespace_export.name.sym.clone()),
                         local_name: None,
                         kind: ExportKind::Unknown,
-                        source: self.create_span_source(namespace_export.span),
+                        source: self.get_source(namespace_export.span),
                     },
                     ModuleImport {
                         imported_name: ImportName::Wildcard,
@@ -529,10 +629,11 @@ impl swc_ecma_visit::Visit for ModuleVisitor {
 
                     Some((
                         ModuleExport {
+                            id: self.next_export_id(),
                             name: export_name,
                             local_name: Some(named.orig.sym.clone()),
                             kind: ExportKind::Unknown,
-                            source: self.create_span_source(named.span),
+                            source: self.get_source(named.span),
                         },
                         ModuleImport {
                             imported_name: ImportName::Named(named.orig.sym.clone()),
