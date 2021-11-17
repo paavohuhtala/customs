@@ -1,4 +1,4 @@
-use crate::tests::utils::{run_test, TestScope, TestSpec};
+use crate::tests::utils::{run_test, TestBinding, TestScope, TestSpec};
 
 #[test]
 pub fn block() {
@@ -15,10 +15,10 @@ pub fn block() {
         exports: vec![],
         imports: vec![],
         scope: TestScope {
-            bindings: vec!["foo"],
+            bindings: vec![TestBinding::private("foo")],
             inner: vec![TestScope {
-                bindings: vec!["foo"],
-                type_bindings: vec!["Bar"],
+                bindings: vec![TestBinding::private("foo")],
+                type_bindings: vec![TestBinding::private("Bar")],
                 inner: vec![TestScope::default()],
                 ..Default::default()
             }],
@@ -43,9 +43,9 @@ pub fn function() {
         exports: vec![],
         imports: vec![],
         scope: TestScope {
-            bindings: vec!["outerFunction"],
+            bindings: vec![TestBinding::private("outerFunction")],
             inner: vec![TestScope {
-                bindings: vec!["innerFunction"],
+                bindings: vec![TestBinding::private("innerFunction")],
                 inner: vec![TestScope::default()],
                 ..Default::default()
             }],
@@ -70,9 +70,9 @@ pub fn arrow_function() {
         exports: vec![],
         imports: vec![],
         scope: TestScope {
-            bindings: vec!["outerFunction"],
+            bindings: vec![TestBinding::private("outerFunction")],
             inner: vec![TestScope {
-                bindings: vec!["innerFunction"],
+                bindings: vec![TestBinding::private("innerFunction")],
                 inner: vec![TestScope::default()],
                 ..Default::default()
             }],
@@ -94,9 +94,9 @@ pub fn function_generics() {
         exports: vec![],
         imports: vec![],
         scope: TestScope {
-            bindings: vec!["f"],
+            bindings: vec![TestBinding::private("f")],
             inner: vec![TestScope {
-                type_bindings: vec!["T"],
+                type_bindings: vec![TestBinding::private("T")],
                 ..Default::default()
             }],
             ..Default::default()
@@ -117,9 +117,9 @@ pub fn interface_generics() {
         exports: vec![],
         imports: vec![],
         scope: TestScope {
-            type_bindings: vec!["Foo"],
+            type_bindings: vec![TestBinding::private("Foo")],
             inner: vec![TestScope {
-                type_bindings: vec!["T"],
+                type_bindings: vec![TestBinding::private("T")],
                 type_references: vec!["T"],
                 ..Default::default()
             }],
@@ -141,9 +141,9 @@ pub fn type_generics() {
         exports: vec![],
         imports: vec![],
         scope: TestScope {
-            type_bindings: vec!["Foo"],
+            type_bindings: vec![TestBinding::private("Foo")],
             inner: vec![TestScope {
-                type_bindings: vec!["T"],
+                type_bindings: vec![TestBinding::private("T")],
                 type_references: vec!["T"],
                 ..Default::default()
             }],
@@ -175,12 +175,12 @@ pub fn class() {
         exports: vec![],
         imports: vec![],
         scope: TestScope {
-            bindings: vec!["Foo"],
-            type_bindings: vec!["Foo"],
+            bindings: vec![TestBinding::private("Foo")],
+            type_bindings: vec![TestBinding::private("Foo")],
             inner: vec![TestScope {
                 inner: vec![
                     TestScope {
-                        bindings: vec!["x"],
+                        bindings: vec![TestBinding::private("x")],
                         references: vec!["x"],
                         ..Default::default()
                     },
@@ -198,16 +198,16 @@ pub fn class() {
 #[test]
 pub fn ts_enum() {
     let source = r#"
-        export enum Foo { A, B, C = getBar() }
+        enum Foo { A, B, C = getBar() }
     "#;
 
     let spec = TestSpec {
         source,
-        exports: vec!["Foo"],
+        exports: vec![],
         imports: vec![],
         scope: TestScope {
-            bindings: vec!["Foo"],
-            type_bindings: vec!["Foo"],
+            bindings: vec![TestBinding::private("Foo")],
+            type_bindings: vec![TestBinding::private("Foo")],
             inner: vec![TestScope {
                 references: vec!["getBar"],
                 ..Default::default()
@@ -242,20 +242,20 @@ pub fn loops_in_closures() {
             references: vec!["it"],
             inner: vec![
                 TestScope {
-                    bindings: vec!["x"],
+                    bindings: vec![TestBinding::private("x")],
                     inner: vec![TestScope {
                         references: vec!["l1"],
-                        bindings: vec!["x"],
+                        bindings: vec![TestBinding::private("x")],
                         inner: vec![TestScope::default()],
                         ..Default::default()
                     }],
                     ..Default::default()
                 },
                 TestScope {
-                    bindings: vec!["x"],
+                    bindings: vec![TestBinding::private("x")],
                     inner: vec![TestScope {
                         references: vec!["l2"],
-                        bindings: vec!["x"],
+                        bindings: vec![TestBinding::private("x")],
                         inner: vec![TestScope::default()],
                         ..Default::default()
                     }],
@@ -280,18 +280,18 @@ pub fn ts_overloads() {
 
     let spec = TestSpec {
         source,
-        exports: vec!["foo"],
+        exports: vec![],
         imports: vec![],
         scope: TestScope {
-            bindings: vec!["foo"],
+            bindings: vec![TestBinding::exported("foo")],
             inner: vec![
                 TestScope::default(),
                 TestScope {
-                    bindings: vec!["x"],
+                    bindings: vec![TestBinding::private("x")],
                     ..Default::default()
                 },
                 TestScope {
-                    bindings: vec!["x"],
+                    bindings: vec![TestBinding::private("x")],
                     ..Default::default()
                 },
             ],
@@ -334,13 +334,13 @@ pub fn ts_declare_module() {
             bindings: vec![],
             inner: vec![
                 TestScope {
-                    bindings: vec!["content"],
+                    bindings: vec![TestBinding::private("content")],
                     type_references: vec!["SvgProps"],
                     ambiguous_references: vec!["content"],
                     ..Default::default()
                 },
                 TestScope {
-                    bindings: vec!["content"],
+                    bindings: vec![TestBinding::private("content")],
                     type_references: vec!["ImageSourcePropType"],
                     ambiguous_references: vec!["content"],
                     ..Default::default()

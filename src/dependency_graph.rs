@@ -90,16 +90,16 @@ pub struct Export {
     pub usage: Cell<Usage>,
     pub kind: ExportKind,
     pub visibility: Visibility,
-    pub location: ModuleSourceAndLine,
+    pub source: ModuleSourceAndLine,
 }
 
 impl Export {
-    pub fn new(kind: ExportKind, visibility: Visibility, location: ModuleSourceAndLine) -> Self {
+    pub fn new(kind: ExportKind, visibility: Visibility, source: ModuleSourceAndLine) -> Self {
         Export {
             usage: Cell::default(),
             kind,
             visibility,
-            location,
+            source,
         }
     }
 

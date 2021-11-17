@@ -2,12 +2,15 @@ use std::{
     borrow::Borrow,
     collections::{HashMap, HashSet},
     path::PathBuf,
+    sync::Arc,
 };
 
 use crate::{
-    dependency_graph::{ExportName, ImportName},
-    module_visitor::{ModuleVisitor, Scope, ScopeId},
-    parsing::module_from_source,
+    dependency_graph::{
+        normalize_module_path, ExportName, ImportName, Module, ModuleKind, ModulePath,
+    },
+    module_visitor::{BindingLike, ModuleVisitor, Scope, ScopeId, SelfExport},
+    parsing::{analyze_module, module_from_source},
 };
 
 use anyhow::Context;
@@ -15,7 +18,7 @@ use pretty_assertions::assert_eq;
 use swc_atoms::JsWord;
 use swc_ecma_visit::Visit;
 
-pub fn parse_and_visit(virtual_path: &'static str, source: &'static str) -> ModuleVisitor {
+pub(crate) fn parse_and_visit(virtual_path: &'static str, source: &'static str) -> ModuleVisitor {
     let (source_map, module) = module_from_source(
         String::from(source),
         crate::dependency_graph::ModuleKind::TS,
@@ -29,12 +32,68 @@ pub fn parse_and_visit(virtual_path: &'static str, source: &'static str) -> Modu
     visitor
 }
 
+pub(crate) fn parse_and_analyze(virtual_path: &'static str, source: &'static str) -> Module {
+    let module_kind = if virtual_path.ends_with(".d.ts") {
+        ModuleKind::DTS
+    } else if virtual_path.ends_with(".tsx") {
+        ModuleKind::TSX
+    } else {
+        ModuleKind::TS
+    };
+
+    let visitor = parse_and_visit(virtual_path, source);
+
+    let root = Arc::new(PathBuf::from(""));
+
+    let virtual_path = PathBuf::from(virtual_path);
+    let normalized = normalize_module_path(&root, &virtual_path).unwrap();
+
+    let module = Module::new(
+        ModulePath {
+            root,
+            root_relative: Arc::new(virtual_path),
+            normalized,
+        },
+        module_kind,
+    );
+
+    analyze_module(module, visitor).unwrap()
+}
+
+pub struct TestBinding {
+    pub(crate) name: &'static str,
+    pub(crate) exported: SelfExport,
+}
+
+impl TestBinding {
+    pub fn private(name: &'static str) -> Self {
+        Self {
+            name,
+            exported: SelfExport::Private,
+        }
+    }
+
+    pub fn exported(name: &'static str) -> Self {
+        Self {
+            name,
+            exported: SelfExport::Named,
+        }
+    }
+
+    pub fn default_exported(name: &'static str) -> Self {
+        Self {
+            name,
+            exported: SelfExport::Default,
+        }
+    }
+}
+
 pub struct TestScope {
     pub(crate) references: Vec<&'static str>,
     pub(crate) type_references: Vec<&'static str>,
     pub(crate) ambiguous_references: Vec<&'static str>,
-    pub(crate) bindings: Vec<&'static str>,
-    pub(crate) type_bindings: Vec<&'static str>,
+    pub(crate) bindings: Vec<TestBinding>,
+    pub(crate) type_bindings: Vec<TestBinding>,
     pub(crate) inner: Vec<TestScope>,
 }
 
@@ -188,10 +247,11 @@ pub fn run_test(spec: TestSpec) {
         assert_eq!(
             expected.len(),
             was.len(),
-            "Expected scope {} to contain {} {}",
+            "Expected scope {} to contain {} {}, was {}",
             scope_id,
             expected.len(),
-            kind_plural
+            kind_plural,
+            was.len()
         );
 
         for binding in expected {
@@ -206,15 +266,58 @@ pub fn run_test(spec: TestSpec) {
         }
     }
 
+    fn assert_bindings_equal<B: BindingLike>(
+        kind_singular: &'static str,
+        kind_plural: &'static str,
+        expected: &[TestBinding],
+        was: &HashMap<JsWord, B>,
+        scope_id: ScopeId,
+    ) {
+        assert_eq!(
+            expected.len(),
+            was.len(),
+            "Expected scope {} to contain {} {}, was {}",
+            scope_id,
+            expected.len(),
+            kind_plural,
+            was.len(),
+        );
+
+        for expected_binding in expected {
+            let as_atom = JsWord::from(expected_binding.name);
+            let binding = was.get(&as_atom);
+
+            match (expected_binding, binding) {
+                (_, None) => {
+                    panic!(
+                        "Did not find {} {} in scope {}",
+                        kind_singular, expected_binding.name, scope_id
+                    );
+                }
+                (expected_binding, Some(binding)) => {
+                    assert_eq!(
+                        expected_binding.exported,
+                        binding.export(),
+                        "Expected {} {} to have export state {:?}, was {:?}",
+                        kind_singular,
+                        expected_binding.name,
+                        expected_binding.exported,
+                        binding.export()
+                    );
+                }
+            }
+        }
+    }
+
     fn check_scope(test_scope: &TestScope, scope: &Scope, scopes: &[Scope]) {
-        assert_vec_set_equal(
+        assert_bindings_equal(
             "binding",
             "bindings",
             &test_scope.bindings,
             &scope.bindings,
             scope.id,
         );
-        assert_vec_set_equal(
+        assert_bindings_equal(
             "type binding",
             "type bindings",
             &test_scope.type_bindings,
